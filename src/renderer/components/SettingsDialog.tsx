@@ -5,9 +5,8 @@ import * as Select from '@radix-ui/react-select';
 import * as Slider from '@radix-ui/react-slider';
 import * as Separator from '@radix-ui/react-separator';
 import { rootStore } from '../stores';
-import { Provider, Settings, ModelInfo } from '@shared/types';
+import { Provider, Settings } from '@shared/types';
 import { X, ChevronDown, Eye, EyeOff, TestTube, BarChart3 } from 'lucide-react';
-import clsx from 'clsx';
 
 export const SettingsDialog = observer(() => {
     const { settingsStore, uiStore } = rootStore;
