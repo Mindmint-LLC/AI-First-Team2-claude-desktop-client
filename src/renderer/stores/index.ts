@@ -1,4 +1,4 @@
-import { makeAutoObservable, runInAction, action, computed, observable } from 'mobx';
+import { makeAutoObservable, runInAction } from 'mobx';
 import {
     Conversation,
     Message,
@@ -7,6 +7,31 @@ import {
     ModelInfo,
     UsageStats
 } from '@shared/types';
+
+// Declare the electronAPI interface if not already declared globally
+declare global {
+    interface Window {
+        electronAPI: {
+            invoke: (channel: string, data?: any) => Promise<any>;
+            on: (channel: string, callback: Function) => void;
+            off: (channel: string, callback: Function) => void;
+            channels: {
+                CONVERSATION_LIST: string;
+                CONVERSATION_CREATE: string;
+                CONVERSATION_UPDATE: string;
+                CONVERSATION_DELETE: string;
+                MESSAGE_LIST: string;
+                MESSAGE_SEND: string;
+                MESSAGE_DELETE: string;
+                SETTINGS_GET: string;
+                SETTINGS_UPDATE: string;
+                API_MODELS: string;
+                API_TEST: string;
+                USAGE_STATS: string;
+            };
+        };
+    }
+}
 
 // Root Store
 export class RootStore {
@@ -21,8 +46,21 @@ export class RootStore {
         this.settingsStore = new SettingsStore(this);
         this.uiStore = new UIStore(this);
 
-        // Setup event listeners
-        this.setupEventListeners();
+        // Setup event listeners - defer to ensure electronAPI is available
+        if (typeof window !== 'undefined' && window.electronAPI) {
+            this.setupEventListeners();
+        } else {
+            // Wait for DOM to be ready
+            if (typeof window !== 'undefined') {
+                window.addEventListener('DOMContentLoaded', () => {
+                    if (window.electronAPI) {
+                        this.setupEventListeners();
+                    } else {
+                        console.error('electronAPI not found on window object');
+                    }
+                });
+            }
+        }
     }
 
     private setupEventListeners(): void {
@@ -95,12 +133,12 @@ export class RootStore {
 
 // Conversation Store
 export class ConversationStore {
-    @observable conversations: Map<string, Conversation> = new Map();
-    @observable activeConversationId: string | null = null;
-    @observable isLoading = false;
-    @observable hasMore = true;
-    @observable searchQuery = '';
-    @observable totalConversations = 0;
+    conversations: Map<string, Conversation> = new Map();
+    activeConversationId: string | null = null;
+    isLoading = false;
+    hasMore = true;
+    searchQuery = '';
+    totalConversations = 0;
 
     private rootStore: RootStore;
     private loadedCount = 0;
@@ -109,10 +147,20 @@ export class ConversationStore {
     constructor(rootStore: RootStore) {
         this.rootStore = rootStore;
         makeAutoObservable(this);
-        this.loadInitialConversations();
+        
+        // Only load if electronAPI is available
+        if (typeof window !== 'undefined' && window.electronAPI) {
+            this.loadInitialConversations();
+        } else if (typeof window !== 'undefined') {
+            window.addEventListener('DOMContentLoaded', () => {
+                if (window.electronAPI) {
+                    this.loadInitialConversations();
+                }
+            });
+        }
     }
 
-    @computed get conversationList(): Conversation[] {
+    get conversationList(): Conversation[] {
         const list = Array.from(this.conversations.values());
 
         if (this.searchQuery) {
@@ -124,12 +172,11 @@ export class ConversationStore {
         return list.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
     }
 
-    @computed get activeConversation(): Conversation | null {
+    get activeConversation(): Conversation | null {
         if (!this.activeConversationId) return null;
         return this.conversations.get(this.activeConversationId) || null;
     }
 
-    @action
     async loadInitialConversations(): Promise<void> {
         this.isLoading = true;
 
@@ -167,7 +214,6 @@ export class ConversationStore {
         }
     }
 
-    @action
     async loadMoreConversations(): Promise<void> {
         if (this.isLoading || !this.hasMore) return;
 
@@ -200,7 +246,6 @@ export class ConversationStore {
         }
     }
 
-    @action
     async createConversation(title?: string): Promise<void> {
         try {
             const conversation = await window.electronAPI.invoke(window.electronAPI.channels.CONVERSATION_CREATE, { title });
@@ -219,13 +264,11 @@ export class ConversationStore {
         }
     }
 
-    @action
     selectConversation(id: string): void {
         this.activeConversationId = id;
         this.rootStore.messageStore.loadMessages(id);
     }
 
-    @action
     async renameConversation(id: string, title: string): Promise<void> {
         try {
             const updated = await window.electronAPI.invoke(window.electronAPI.channels.CONVERSATION_UPDATE, {
@@ -245,7 +288,6 @@ export class ConversationStore {
         }
     }
 
-    @action
     async deleteConversation(id: string): Promise<void> {
         try {
             await window.electronAPI.invoke(window.electronAPI.channels.CONVERSATION_DELETE, { id });
@@ -268,13 +310,11 @@ export class ConversationStore {
         }
     }
 
-    @action
     setSearchQuery(query: string): void {
         this.searchQuery = query;
     }
 
     // Event handlers
-    @action
     handleConversationCreated(conversation: Conversation): void {
         this.conversations.set(conversation.id, {
             ...conversation,
@@ -283,7 +323,6 @@ export class ConversationStore {
         });
     }
 
-    @action
     handleConversationUpdated(conversation: Conversation): void {
         this.conversations.set(conversation.id, {
             ...conversation,
@@ -292,7 +331,6 @@ export class ConversationStore {
         });
     }
 
-    @action
     handleConversationDeleted(id: string): void {
         this.conversations.delete(id);
     }
@@ -300,10 +338,10 @@ export class ConversationStore {
 
 // Message Store
 export class MessageStore {
-    @observable messages: Map<string, Message[]> = new Map();
-    @observable streamingMessages: Set<string> = new Set();
-    @observable isLoading = false;
-    @observable isSending = false;
+    messages: Map<string, Message[]> = new Map();
+    streamingMessages: Set<string> = new Set();
+    isLoading = false;
+    isSending = false;
 
     private rootStore: RootStore;
 
@@ -312,14 +350,13 @@ export class MessageStore {
         makeAutoObservable(this);
     }
 
-    @computed get currentMessages(): Message[] {
+    get currentMessages(): Message[] {
         const conversationId = this.rootStore.conversationStore.activeConversationId;
         if (!conversationId) return [];
 
         return this.messages.get(conversationId) || [];
     }
 
-    @action
     async loadMessages(conversationId: string): Promise<void> {
         this.isLoading = true;
 
@@ -341,7 +378,6 @@ export class MessageStore {
         }
     }
 
-    @action
     async sendMessage(content: string, model?: string, provider?: Provider): Promise<void> {
         const conversationId = this.rootStore.conversationStore.activeConversationId;
         if (!conversationId || this.isSending) return;
@@ -380,7 +416,6 @@ export class MessageStore {
         }
     }
 
-    @action
     async deleteMessage(id: string): Promise<void> {
         try {
             await window.electronAPI.invoke(window.electronAPI.channels.MESSAGE_DELETE, { id });
@@ -392,7 +427,6 @@ export class MessageStore {
     }
 
     // Event handlers
-    @action
     handleMessageCreated(message: Message): void {
         const messages = this.messages.get(message.conversationId) || [];
         messages.push({
@@ -402,7 +436,6 @@ export class MessageStore {
         this.messages.set(message.conversationId, messages);
     }
 
-    @action
     handleMessageUpdated(message: Message): void {
         const messages = this.messages.get(message.conversationId) || [];
         const index = messages.findIndex(m => m.id === message.id);
@@ -416,12 +449,10 @@ export class MessageStore {
         }
     }
 
-    @action
     handleStreamStart(messageId: string): void {
         this.streamingMessages.add(messageId);
     }
 
-    @action
     handleStreamToken(messageId: string, _token: string, fullContent: string): void {
         // Find and update message
         for (const [conversationId, messages] of this.messages.entries()) {
@@ -434,7 +465,6 @@ export class MessageStore {
         }
     }
 
-    @action
     handleStreamComplete(messageId: string, fullContent: string, tokenCount: number, cost: number): void {
         this.streamingMessages.delete(messageId);
 
@@ -452,7 +482,6 @@ export class MessageStore {
         }
     }
 
-    @action
     handleStreamError(messageId: string, error: string): void {
         this.streamingMessages.delete(messageId);
 
@@ -473,19 +502,28 @@ export class MessageStore {
 
 // Settings Store
 export class SettingsStore {
-    @observable settings: Settings | null = null;
-    @observable availableModels: Map<Provider, ModelInfo[]> = new Map();
-    @observable isLoading = false;
+    settings: Settings | null = null;
+    availableModels: Map<Provider, ModelInfo[]> = new Map();
+    isLoading = false;
 
     private rootStore: RootStore;
 
     constructor(rootStore: RootStore) {
         this.rootStore = rootStore;
         makeAutoObservable(this);
-        this.loadSettings();
+        
+        // Only load if electronAPI is available
+        if (typeof window !== 'undefined' && window.electronAPI) {
+            this.loadSettings();
+        } else if (typeof window !== 'undefined') {
+            window.addEventListener('DOMContentLoaded', () => {
+                if (window.electronAPI) {
+                    this.loadSettings();
+                }
+            });
+        }
     }
 
-    @action
     async loadSettings(): Promise<void> {
         this.isLoading = true;
 
@@ -509,7 +547,6 @@ export class SettingsStore {
         }
     }
 
-    @action
     async updateSettings(updates: Partial<Settings>): Promise<void> {
         try {
             const settings = await window.electronAPI.invoke(window.electronAPI.channels.SETTINGS_UPDATE, updates);
@@ -524,7 +561,6 @@ export class SettingsStore {
         }
     }
 
-    @action
     async loadModels(provider: Provider): Promise<void> {
         try {
             const models = await window.electronAPI.invoke(window.electronAPI.channels.API_MODELS, { provider });
@@ -537,7 +573,6 @@ export class SettingsStore {
         }
     }
 
-    @action
     async testConnection(provider: Provider): Promise<boolean> {
         try {
             const result = await window.electronAPI.invoke(window.electronAPI.channels.API_TEST, { provider });
@@ -555,7 +590,6 @@ export class SettingsStore {
         }
     }
 
-    @action
     handleSettingsUpdated(settings: Settings): void {
         this.settings = settings;
     }
@@ -563,13 +597,13 @@ export class SettingsStore {
 
 // UI Store
 export class UIStore {
-    @observable toasts: Array<{ id: string; type: 'success' | 'error' | 'info'; message: string }> = [];
-    @observable isSettingsOpen = false;
-    @observable isRenameDialogOpen = false;
-    @observable renameConversationId: string | null = null;
-    @observable isExportDialogOpen = false;
-    @observable isImportDialogOpen = false;
-    @observable usageStats: UsageStats | null = null;
+    toasts: Array<{ id: string; type: 'success' | 'error' | 'info'; message: string }> = [];
+    isSettingsOpen = false;
+    isRenameDialogOpen = false;
+    renameConversationId: string | null = null;
+    isExportDialogOpen = false;
+    isImportDialogOpen = false;
+    usageStats: UsageStats | null = null;
 
     private rootStore: RootStore;
     private toastIdCounter = 0;
@@ -579,7 +613,6 @@ export class UIStore {
         makeAutoObservable(this);
     }
 
-    @action
     showToast(type: 'success' | 'error' | 'info', message: string): void {
         const id = `toast-${this.toastIdCounter++}`;
         this.toasts.push({ id, type, message });
@@ -590,49 +623,40 @@ export class UIStore {
         }, 5000);
     }
 
-    @action
     dismissToast(id: string): void {
         this.toasts = this.toasts.filter(t => t.id !== id);
     }
 
-    @action
     showSuccess(message: string): void {
         this.showToast('success', message);
     }
 
-    @action
     showError(message: string): void {
         this.showToast('error', message);
     }
 
-    @action
     showInfo(message: string): void {
         this.showToast('info', message);
     }
 
-    @action
     showSettings(): void {
         this.isSettingsOpen = true;
     }
 
-    @action
     hideSettings(): void {
         this.isSettingsOpen = false;
     }
 
-    @action
     showRenameDialog(conversationId: string): void {
         this.renameConversationId = conversationId;
         this.isRenameDialogOpen = true;
     }
 
-    @action
     hideRenameDialog(): void {
         this.isRenameDialogOpen = false;
         this.renameConversationId = null;
     }
 
-    @action
     async loadUsageStats(): Promise<void> {
         try {
             const stats = await window.electronAPI.invoke(window.electronAPI.channels.USAGE_STATS, {});
