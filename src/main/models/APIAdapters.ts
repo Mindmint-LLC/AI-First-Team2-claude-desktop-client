@@ -385,7 +385,7 @@ export class OllamaAdapter extends BaseAPIAdapter {
         }
     }
 
-    setAuthHeader(apiKey: string): void {
+    setAuthHeader(_apiKey: string): void {
         // Ollama doesn't use API keys
     }
 

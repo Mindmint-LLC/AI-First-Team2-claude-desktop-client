@@ -15,6 +15,15 @@ interface MessageItemProps {
     isStreaming: boolean;
 }
 
+// Type definition for ReactMarkdown code component props
+interface CodeProps {
+    node?: any;
+    inline?: boolean;
+    className?: string;
+    children?: React.ReactNode;
+    [key: string]: any;
+}
+
 const MessageItem = observer(({ message, isStreaming }: MessageItemProps) => {
     const [copied, setCopied] = useState(false);
 
@@ -61,7 +70,7 @@ const MessageItem = observer(({ message, isStreaming }: MessageItemProps) => {
                         <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
                             components={{
-                                code({ node, inline, className, children, ...props }) {
+                                code: ({ node, inline, className, children, ...props }: CodeProps) => {
                                     const match = /language-(\w+)/.exec(className || '');
                                     return !inline && match ? (
                                         <div className="code-block">
