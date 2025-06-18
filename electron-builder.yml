@@ -1,0 +1,104 @@
+# File: electron-builder.yml
+# Module: Build Configuration
+# Purpose: Configure electron-builder for cross-platform builds
+# Usage: Used by electron-builder during packaging
+# Contains: Platform-specific build configurations
+# Dependencies: electron-builder
+# Iteration: 1
+
+appId: com.claudedesktop.client
+productName: Claude Desktop Client
+copyright: Copyright © 2024 Claude Desktop Client Team
+
+directories:
+  output: dist-electron
+  buildResources: build
+
+files:
+  - dist/**/*
+  - "!dist-electron/**/*"
+  - "!**/*.map"
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}"
+  - "!**/node_modules/*.d.ts"
+  - "!**/node_modules/.bin"
+
+asarUnpack:
+  - "**/*.node"
+  - "**/node_modules/better-sqlite3/**/*"
+
+afterSign: build/notarize.js
+
+mac:
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  differentialPackage: true
+
+linux:
+  icon: build/icons
+  category: Utility
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+    - target: rpm
+      arch:
+        - x64
+
+appImage:
+  systemIntegration: ask
+  license: LICENSE
+
+deb:
+  priority: optional
+  compression: xz
+
+rpm:
+  compression: xz
+
+# Publishing configuration (optional)
+publish:
+  - provider: github
+    owner: claude-desktop-client
+    repo: releases
