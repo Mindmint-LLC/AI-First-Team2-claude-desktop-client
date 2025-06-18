@@ -1,52 +1,46 @@
-import { contextBridge, ipcRenderer } from 'electron';
-import { IPCChannels, IPCRequest, IPCResponse } from '@shared/types';
+/**
+ * File: src/main/preload.ts
+ * Module: Preload Script
+ * Purpose: Secure bridge between main and renderer processes
+ * Usage: Loaded in renderer context with access to Node APIs
+ * Contains: IPC channel definitions and secure API exposure
+ * Dependencies: electron
+ * Iteration: 2
+ */
 
-// Validate channel names
-const validChannels:string[] = Object.values(IPCChannels);
+import { contextBridge, ipcRenderer } from 'electron';
+import { IPCChannels } from '@shared/constants';
+
+// Define valid channels for security
+const validInvokeChannels:string[] = Object.values(IPCChannels);
+
 const validEventChannels:string[] = [
+    IPCChannels.STREAM_START,
+    IPCChannels.STREAM_TOKEN,
+    IPCChannels.STREAM_END,
+    IPCChannels.STREAM_ERROR,
+    'menu:new-conversation',
+    'menu:open-conversation',
+    'menu:export',
+    'menu:import',
+    'menu:settings',
     'conversation:created',
     'conversation:updated',
     'conversation:deleted',
     'message:created',
     'message:updated',
     'message:deleted',
-    'message:stream:start',
-    'message:stream:token',
-    'message:stream:complete',
-    'message:stream:error',
     'settings:updated',
-    'menu:new-conversation',
-    'menu:open-conversation',
-    'menu:export',
-    'menu:import',
-    'menu:settings',
-    'menu:find',
-    'menu:rename-conversation',
-    'menu:delete-conversation',
-    'menu:clear-messages',
 ];
 
-// Create secure API bridge
+// Secure API exposed to renderer
 const api = {
-    // IPC communication
-    invoke: async <T = any, R = any>(channel: string, data: T): Promise<R> => {
-        if (!validChannels.includes(channel)) {
-            throw new Error(`Invalid channel: ${channel}`);
+    // Invoke main process methods
+    invoke: <T = any, R = any>(channel: string, data: T): Promise<R> => {
+        if (!validInvokeChannels.includes(channel)) {
+            throw new Error(`Invalid invoke channel: ${channel}`);
         }
-
-        const request: IPCRequest<T> = {
-            channel,
-            data,
-            requestId: `${Date.now()}-${Math.random()}`,
-        };
-
-        const response: IPCResponse<R> = await ipcRenderer.invoke(channel, request);
-
-        if (!response.success) {
-            throw new Error(response.error || 'Unknown error');
-        }
-
-        return response.data!;
+        return ipcRenderer.invoke(channel, data);
     },
 
     // Event listeners
@@ -102,22 +96,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
     channels: IPCChannels,
 });
 
-// Type augmentation for TypeScript
-export interface ElectronAPI {
-    invoke: <T = any, R = any>(channel: string, data: T) => Promise<R>;
-    on: (channel: string, callback: (data: any) => void) => () => void;
-    once: (channel: string, callback: (data: any) => void) => void;
-    removeAllListeners: (channel: string) => void;
-    platform: {
-        os: string;
-        arch: string;
-        version: string;
-    };
-    channels: typeof IPCChannels;
-}
-
-declare global {
-    interface Window {
-        electronAPI: ElectronAPI;
-    }
-}
+// Import the shared type - no need to redefine it here
+import type { ElectronAPI } from '@shared/electron-api';

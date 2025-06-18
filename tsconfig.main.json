@@ -1,18 +1,21 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "module": "esnext",
-    "target": "ES2022",
+    "module": "commonjs",
+    "target": "es2020",
     "outDir": "./dist/main",
-    "types": [
-      "node"
-    ]
+    "rootDir": "./src/main",
+    "lib": ["es2020"],
+    "types": ["node"],
+    "skipLibCheck": true
   },
   "include": [
     "src/main/**/*",
     "src/shared/**/*"
   ],
   "exclude": [
+    "node_modules",
+    "dist",
     "src/renderer/**/*"
   ]
 }

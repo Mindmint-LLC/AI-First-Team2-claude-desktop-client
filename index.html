@@ -5,10 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Claude Desktop Client</title>
     <meta name="description" content="Desktop application for multi-provider LLM interaction">
-    <link rel="icon" type="image/png" href="/icon.png">
+    <!-- CSP is handled by Electron, not needed here -->
+    <!-- Use relative path for Electron -->
+    <link rel="icon" type="image/png" href="./icon.png">
 </head>
 <body>
 <div id="root"></div>
-<script type="module" src="/src/renderer/index.tsx"></script>
+<!-- Important: Use relative path for the script -->
+<script type="module" src="./src/renderer/index.tsx"></script>
 </body>
 </html>

@@ -1,6 +1,16 @@
+/**
+ * File: src/shared/types.ts
+ * Module: Shared Type Definitions
+ * Purpose: Define TypeScript types used across main and renderer processes
+ * Usage: Import for type safety in both processes
+ * Contains: Data models, IPC types, API types
+ * Dependencies: zod (for schema validation)
+ * Iteration: 1
+ */
+
 import { z } from 'zod';
 
-// Core Data Models
+// Base data types
 export interface Conversation {
     id: string;
     title: string;
@@ -9,6 +19,7 @@ export interface Conversation {
     messageIds: string[];
     totalTokens: number;
     estimatedCost: number;
+    metadata?: Record<string, unknown>;
 }
 
 export interface Message {
@@ -45,8 +56,8 @@ export interface ModelInfo {
     id: string;
     name: string;
     maxTokens: number;
-    costPer1kInput: number;
-    costPer1kOutput: number;
+    costPer1kInput?: number;
+    costPer1kOutput?: number;
 }
 
 export interface ProviderConfig {
@@ -55,34 +66,79 @@ export interface ProviderConfig {
     headers: Record<string, string>;
 }
 
-// IPC Message Types
-export const IPCChannels = {
-    // Conversation channels
-    CONVERSATION_CREATE: 'conversation:create',
-    CONVERSATION_LIST: 'conversation:list',
-    CONVERSATION_GET: 'conversation:get',
-    CONVERSATION_UPDATE: 'conversation:update',
-    CONVERSATION_DELETE: 'conversation:delete',
+// IPC Types
+export interface IPCRequest<T = unknown> {
+    channel: string;
+    data: T;
+    requestId: string;
+}
 
-    // Message channels
-    MESSAGE_SEND: 'message:send',
-    MESSAGE_STREAM: 'message:stream',
-    MESSAGE_LIST: 'message:list',
-    MESSAGE_DELETE: 'message:delete',
+export interface IPCResponse<T = unknown> {
+    success: boolean;
+    data?: T;
+    error?: string;
+    requestId: string;
+}
 
-    // Settings channels
-    SETTINGS_GET: 'settings:get',
-    SETTINGS_UPDATE: 'settings:update',
+// Stream event types
+export interface StreamEvent {
+    type: 'start' | 'token' | 'end' | 'error';
+    messageId: string;
+    content?: string;
+    error?: string;
+    metadata?: {
+        model?: string;
+        tokenCount?: number;
+        finishReason?: string;
+    };
+}
 
-    // API channels
-    API_TEST: 'api:test',
-    API_MODELS: 'api:models',
+// API Response types
+export interface APIResponse {
+    content: string;
+    model: string;
+    tokenCount: {
+        input: number;
+        output: number;
+        total: number;
+    };
+    cost?: {
+        input: number;
+        output: number;
+        total: number;
+    };
+}
 
-    // Utility channels
-    USAGE_STATS: 'usage:stats',
-    EXPORT_CONVERSATION: 'export:conversation',
-    IMPORT_CONVERSATION: 'import:conversation',
-} as const;
+// Database types
+export interface DatabaseError extends Error {
+    code: string;
+    query?: string;
+}
+
+export interface UsageStats {
+    totalConversations: number;
+    totalMessages: number;
+    totalTokens: number;
+    totalCost: number;
+    byProvider: Record<Provider, {
+        messages: number;
+        tokens: number;
+        cost: number;
+    }>;
+    byModel: Record<string, {
+        messages: number;
+        tokens: number;
+        cost: number;
+    }>;
+}
+
+// Export/Import types
+export interface ExportedConversation {
+    version: string;
+    exportedAt: Date;
+    conversation: Conversation;
+    messages: Message[];
+}
 
 // Zod Schemas for validation
 export const ConversationSchema = z.object({
@@ -93,6 +149,7 @@ export const ConversationSchema = z.object({
     messageIds: z.array(z.string()),
     totalTokens: z.number(),
     estimatedCost: z.number(),
+    metadata: z.record(z.unknown()).optional(),
 });
 
 export const MessageSchema = z.object({
@@ -113,124 +170,58 @@ export const MessageSchema = z.object({
 export const SettingsSchema = z.object({
     provider: z.enum(['claude', 'openai', 'ollama']),
     model: z.string(),
-    temperature: z.number().min(0).max(1),
+    temperature: z.number().min(0).max(2),
     maxTokens: z.number().positive(),
     systemPrompt: z.string(),
     apiKeys: z.record(z.enum(['claude', 'openai', 'ollama']), z.string()),
     retryAttempts: z.number().min(0).max(5),
-    streamRateLimit: z.number().min(10).max(100),
+    streamRateLimit: z.number().min(10).max(1000),
     theme: z.literal('dark'),
     ollamaEndpoint: z.string().url().optional(),
 });
 
-// IPC Request/Response Types
-export interface IPCRequest<T = unknown> {
-    channel: string;
-    data: T;
-    requestId: string;
-}
-
-export interface IPCResponse<T = unknown> {
-    success: boolean;
-    data?: T;
-    error?: string;
-    requestId: string;
-}
-
-// Streaming Event Types
-export interface StreamEvent {
-    type: 'start' | 'token' | 'error' | 'complete';
-    messageId: string;
-    data?: string;
-    error?: string;
-    tokenCount?: number;
-    cost?: number;
-}
-
-// Usage Statistics
-export interface UsageStats {
-    totalConversations: number;
-    totalMessages: number;
-    totalTokens: number;
-    totalCost: number;
-    byProvider: Record<Provider, {
-        messages: number;
-        tokens: number;
-        cost: number;
-    }>;
-    byModel: Record<string, {
-        messages: number;
-        tokens: number;
-        cost: number;
-    }>;
-    dailyUsage: Array<{
-        date: string;
-        tokens: number;
-        cost: number;
-    }>;
-}
-
-// Error Types
-export class APIError extends Error {
-    constructor(
-        message: string,
-        public code: string,
-        public statusCode?: number,
-        public provider?: Provider
-    ) {
-        super(message);
-        this.name = 'APIError';
+// Type guards
+export function isConversation(obj: unknown): obj is Conversation {
+    try {
+        ConversationSchema.parse(obj);
+        return true;
+    } catch {
+        return false;
     }
 }
 
-export class DatabaseError extends Error {
-    constructor(
-        message: string,
-        public operation: string,
-        public originalError?: Error
-    ) {
-        super(message);
-        this.name = 'DatabaseError';
+export function isMessage(obj: unknown): obj is Message {
+    try {
+        MessageSchema.parse(obj);
+        return true;
+    } catch {
+        return false;
     }
 }
 
-// Utility Types
-export type DeepPartial<T> = {
-    [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
-};
+export function isSettings(obj: unknown): obj is Settings {
+    try {
+        SettingsSchema.parse(obj);
+        return true;
+    } catch {
+        return false;
+    }
+}
 
-export type AsyncResult<T> = Promise<{ success: true; data: T } | { success: false; error: string }>;
-
-// Model Configurations
-export const MODEL_CONFIGS: Record<Provider, ProviderConfig> = {
-    claude: {
-        models: [
-            { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus', maxTokens: 4096, costPer1kInput: 0.015, costPer1kOutput: 0.075 },
-            { id: 'claude-3-sonnet-20240229', name: 'Claude 3 Sonnet', maxTokens: 4096, costPer1kInput: 0.003, costPer1kOutput: 0.015 },
-            { id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku', maxTokens: 4096, costPer1kInput: 0.00025, costPer1kOutput: 0.00125 },
-        ],
-        endpoint: 'https://api.anthropic.com/v1/messages',
-        headers: {
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-        },
+// Default values
+export const DEFAULT_SETTINGS: Settings = {
+    provider: 'claude',
+    model: 'claude-3-opus-20240229',
+    temperature: 0.7,
+    maxTokens: 2048,
+    systemPrompt: 'You are a helpful AI assistant.',
+    apiKeys: {
+        claude: '',
+        openai: '',
+        ollama: '',
     },
-    openai: {
-        models: [
-            { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', maxTokens: 128000, costPer1kInput: 0.01, costPer1kOutput: 0.03 },
-            { id: 'gpt-4', name: 'GPT-4', maxTokens: 8192, costPer1kInput: 0.03, costPer1kOutput: 0.06 },
-            { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', maxTokens: 16385, costPer1kInput: 0.0005, costPer1kOutput: 0.0015 },
-        ],
-        endpoint: 'https://api.openai.com/v1/chat/completions',
-        headers: {
-            'content-type': 'application/json',
-        },
-    },
-    ollama: {
-        models: [], // Populated dynamically
-        endpoint: 'http://localhost:11434/api/chat',
-        headers: {
-            'content-type': 'application/json',
-        },
-    },
+    retryAttempts: 3,
+    streamRateLimit: 50,
+    theme: 'dark',
+    ollamaEndpoint: 'http://localhost:11434/api',
 };

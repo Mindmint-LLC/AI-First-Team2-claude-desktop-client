@@ -1,6 +1,7 @@
 import { readdirSync, statSync, writeFileSync, mkdirSync, readFileSync, unlinkSync, rmdirSync } from "fs";
 import * as path from "path";
 import config from "./configFlatten.json";
+import { generateManifest } from "./manifest";
 
 const PATH_INPUT = path.resolve(__dirname, config.PATH_ROOT);
 const PATH_OUTPUT = path.resolve(__dirname, config.PATH_FLATTENED);
@@ -67,3 +68,4 @@ function setupDirectory() {
 
 setupDirectory();
 flattenDirectoryStructure();
+generateManifest();

@@ -4,13 +4,14 @@
   "description": "Desktop application for multi-provider LLM interaction",
   "main": "dist/main/index.js",
   "scripts": {
-    "dev": "concurrently \"npm run dev:main\" \"npm run dev:renderer\"",
+    "dev": "node scripts/dev.js",
     "dev:main": "tsc -w -p tsconfig.main.json",
-    "dev:renderer": "vite",
+    "dev:renderer:watch": "vite build --watch",
     "build": "npm run build:main && npm run build:renderer && npm run build:electron",
     "build:main": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",
     "build:electron": "electron-builder",
+    "start": "electron .",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -29,6 +30,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.9",
+    "@types/glob": "^8.1.0",
     "@types/jest": "^29.5.11",
     "@types/lodash": "^4.14.202",
     "@types/node": "^20.11.5",
@@ -85,7 +87,8 @@
     },
     "files": [
       "dist/**/*",
-      "assets/**/*"
+      "assets/**/*",
+      "!dist-electron/**/*"
     ],
     "mac": {
       "category": "public.app-category.productivity",

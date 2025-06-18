@@ -1,3 +1,13 @@
+/**
+ * File: src/renderer/stores/index.ts
+ * Module: Renderer State Management (View/Controller)
+ * Purpose: MobX stores for managing application state in renderer process
+ * Usage: Import RootStore and use in React components with observer
+ * Contains: RootStore, ConversationStore, MessageStore, SettingsStore, UIStore
+ * Dependencies: mobx, electron API types
+ * Iteration: 2
+ */
+
 import { makeAutoObservable, runInAction } from 'mobx';
 import {
     Conversation,
@@ -7,31 +17,9 @@ import {
     ModelInfo,
     UsageStats
 } from '@shared/types';
-
-// Declare the electronAPI interface if not already declared globally
-declare global {
-    interface Window {
-        electronAPI: {
-            invoke: (channel: string, data?: any) => Promise<any>;
-            on: (channel: string, callback: Function) => void;
-            off: (channel: string, callback: Function) => void;
-            channels: {
-                CONVERSATION_LIST: string;
-                CONVERSATION_CREATE: string;
-                CONVERSATION_UPDATE: string;
-                CONVERSATION_DELETE: string;
-                MESSAGE_LIST: string;
-                MESSAGE_SEND: string;
-                MESSAGE_DELETE: string;
-                SETTINGS_GET: string;
-                SETTINGS_UPDATE: string;
-                API_MODELS: string;
-                API_TEST: string;
-                USAGE_STATS: string;
-            };
-        };
-    }
-}
+import { IPCChannels } from '@shared/constants';
+// Import the shared ElectronAPI type instead of declaring it here
+import type { ElectronAPI } from '@shared/electron-api';
 
 // Root Store
 export class RootStore {
@@ -87,19 +75,19 @@ export class RootStore {
         });
 
         // Stream events
-        window.electronAPI.on('message:stream:start', (data: { messageId: string }) => {
+        window.electronAPI.on('stream:start', (data: { messageId: string }) => {
             this.messageStore.handleStreamStart(data.messageId);
         });
 
-        window.electronAPI.on('message:stream:token', (data: { messageId: string; token: string; fullContent: string }) => {
+        window.electronAPI.on('stream:token', (data: { messageId: string; token: string; fullContent: string }) => {
             this.messageStore.handleStreamToken(data.messageId, data.token, data.fullContent);
         });
 
-        window.electronAPI.on('message:stream:complete', (data: { messageId: string; fullContent: string; tokenCount: number; cost: number }) => {
+        window.electronAPI.on('stream:end', (data: { messageId: string; fullContent: string; tokenCount: number; cost: number }) => {
             this.messageStore.handleStreamComplete(data.messageId, data.fullContent, data.tokenCount, data.cost);
         });
 
-        window.electronAPI.on('message:stream:error', (data: { messageId: string; error: string }) => {
+        window.electronAPI.on('stream:error', (data: { messageId: string; error: string }) => {
             this.messageStore.handleStreamError(data.messageId, data.error);
         });
 
@@ -147,7 +135,7 @@ export class ConversationStore {
     constructor(rootStore: RootStore) {
         this.rootStore = rootStore;
         makeAutoObservable(this);
-        
+
         // Only load if electronAPI is available
         if (typeof window !== 'undefined' && window.electronAPI) {
             this.loadInitialConversations();
@@ -181,7 +169,7 @@ export class ConversationStore {
         this.isLoading = true;
 
         try {
-            const result = await window.electronAPI.invoke(window.electronAPI.channels.CONVERSATION_LIST, {
+            const result = await window.electronAPI.invoke(IPCChannels.GET_CONVERSATIONS, {
                 limit: this.pageSize,
                 offset: 0,
             });
@@ -189,20 +177,15 @@ export class ConversationStore {
             runInAction(() => {
                 this.conversations.clear();
                 result.conversations.forEach((conv: Conversation) => {
-                    this.conversations.set(conv.id, {
-                        ...conv,
-                        createdAt: new Date(conv.createdAt),
-                        updatedAt: new Date(conv.updatedAt),
-                    });
+                    this.conversations.set(conv.id, conv);
                 });
-
                 this.totalConversations = result.total;
                 this.loadedCount = result.conversations.length;
                 this.hasMore = this.loadedCount < this.totalConversations;
 
-                // Select first conversation if none selected
-                if (!this.activeConversationId && result.conversations.length > 0) {
-                    this.selectConversation(result.conversations[0].id);
+                // Set active conversation to the most recent
+                if (result.conversations.length > 0 && !this.activeConversationId) {
+                    this.activeConversationId = result.conversations[0].id;
                 }
             });
         } catch (error) {
@@ -220,20 +203,15 @@ export class ConversationStore {
         this.isLoading = true;
 
         try {
-            const result = await window.electronAPI.invoke(window.electronAPI.channels.CONVERSATION_LIST, {
+            const result = await window.electronAPI.invoke(IPCChannels.GET_CONVERSATIONS, {
                 limit: this.pageSize,
                 offset: this.loadedCount,
             });
 
             runInAction(() => {
                 result.conversations.forEach((conv: Conversation) => {
-                    this.conversations.set(conv.id, {
-                        ...conv,
-                        createdAt: new Date(conv.createdAt),
-                        updatedAt: new Date(conv.updatedAt),
-                    });
+                    this.conversations.set(conv.id, conv);
                 });
-
                 this.loadedCount += result.conversations.length;
                 this.hasMore = this.loadedCount < this.totalConversations;
             });
@@ -248,49 +226,35 @@ export class ConversationStore {
 
     async createConversation(title?: string): Promise<void> {
         try {
-            const conversation = await window.electronAPI.invoke(window.electronAPI.channels.CONVERSATION_CREATE, { title });
+            const conversation = await window.electronAPI.invoke(IPCChannels.CREATE_CONVERSATION, { title });
 
             runInAction(() => {
-                this.conversations.set(conversation.id, {
-                    ...conversation,
-                    createdAt: new Date(conversation.createdAt),
-                    updatedAt: new Date(conversation.updatedAt),
-                });
-                this.selectConversation(conversation.id);
+                this.conversations.set(conversation.id, conversation);
+                this.activeConversationId = conversation.id;
                 this.totalConversations++;
             });
+
+            this.rootStore.uiStore.showSuccess('Conversation created');
         } catch (error) {
             this.rootStore.uiStore.showError('Failed to create conversation');
         }
     }
 
-    selectConversation(id: string): void {
-        this.activeConversationId = id;
-        this.rootStore.messageStore.loadMessages(id);
-    }
-
-    async renameConversation(id: string, title: string): Promise<void> {
+    async updateConversation(id: string, updates: Partial<Conversation>): Promise<void> {
         try {
-            const updated = await window.electronAPI.invoke(window.electronAPI.channels.CONVERSATION_UPDATE, {
-                id,
-                updates: { title },
-            });
+            const conversation = await window.electronAPI.invoke(IPCChannels.UPDATE_CONVERSATION, { id, updates });
 
             runInAction(() => {
-                this.conversations.set(id, {
-                    ...updated,
-                    createdAt: new Date(updated.createdAt),
-                    updatedAt: new Date(updated.updatedAt),
-                });
+                this.conversations.set(id, conversation);
             });
         } catch (error) {
-            this.rootStore.uiStore.showError('Failed to rename conversation');
+            this.rootStore.uiStore.showError('Failed to update conversation');
         }
     }
 
     async deleteConversation(id: string): Promise<void> {
         try {
-            await window.electronAPI.invoke(window.electronAPI.channels.CONVERSATION_DELETE, { id });
+            await window.electronAPI.invoke(IPCChannels.DELETE_CONVERSATION, { id });
 
             runInAction(() => {
                 this.conversations.delete(id);
@@ -298,15 +262,21 @@ export class ConversationStore {
 
                 if (this.activeConversationId === id) {
                     const remaining = this.conversationList;
-                    if (remaining.length > 0) {
-                        this.selectConversation(remaining[0].id);
-                    } else {
-                        this.activeConversationId = null;
-                    }
+                    this.activeConversationId = remaining.length > 0 ? remaining[0].id : null;
                 }
             });
+
+            this.rootStore.uiStore.showSuccess('Conversation deleted');
         } catch (error) {
             this.rootStore.uiStore.showError('Failed to delete conversation');
+        }
+    }
+
+    setActiveConversation(id: string): void {
+        if (this.conversations.has(id)) {
+            this.activeConversationId = id;
+            // Load messages for the conversation
+            this.rootStore.messageStore.loadMessages(id);
         }
     }
 
@@ -314,25 +284,23 @@ export class ConversationStore {
         this.searchQuery = query;
     }
 
-    // Event handlers
     handleConversationCreated(conversation: Conversation): void {
-        this.conversations.set(conversation.id, {
-            ...conversation,
-            createdAt: new Date(conversation.createdAt),
-            updatedAt: new Date(conversation.updatedAt),
-        });
+        this.conversations.set(conversation.id, conversation);
+        this.totalConversations++;
     }
 
     handleConversationUpdated(conversation: Conversation): void {
-        this.conversations.set(conversation.id, {
-            ...conversation,
-            createdAt: new Date(conversation.createdAt),
-            updatedAt: new Date(conversation.updatedAt),
-        });
+        this.conversations.set(conversation.id, conversation);
     }
 
     handleConversationDeleted(id: string): void {
         this.conversations.delete(id);
+        this.totalConversations--;
+
+        if (this.activeConversationId === id) {
+            const remaining = this.conversationList;
+            this.activeConversationId = remaining.length > 0 ? remaining[0].id : null;
+        }
     }
 }
 
@@ -350,24 +318,20 @@ export class MessageStore {
         makeAutoObservable(this);
     }
 
-    get currentMessages(): Message[] {
-        const conversationId = this.rootStore.conversationStore.activeConversationId;
-        if (!conversationId) return [];
-
+    getMessages(conversationId: string): Message[] {
         return this.messages.get(conversationId) || [];
     }
 
     async loadMessages(conversationId: string): Promise<void> {
+        if (this.messages.has(conversationId)) return;
+
         this.isLoading = true;
 
         try {
-            const messages = await window.electronAPI.invoke(window.electronAPI.channels.MESSAGE_LIST, { conversationId });
+            const messages = await window.electronAPI.invoke(IPCChannels.GET_MESSAGES, { conversationId });
 
             runInAction(() => {
-                this.messages.set(conversationId, messages.map((msg: Message) => ({
-                    ...msg,
-                    timestamp: new Date(msg.timestamp),
-                })));
+                this.messages.set(conversationId, messages);
             });
         } catch (error) {
             this.rootStore.uiStore.showError('Failed to load messages');
@@ -378,34 +342,21 @@ export class MessageStore {
         }
     }
 
-    async sendMessage(content: string, model?: string, provider?: Provider): Promise<void> {
+    async sendMessage(content: string): Promise<void> {
         const conversationId = this.rootStore.conversationStore.activeConversationId;
         if (!conversationId || this.isSending) return;
 
         this.isSending = true;
 
         try {
-            const result = await window.electronAPI.invoke(window.electronAPI.channels.MESSAGE_SEND, {
+            const response = await window.electronAPI.invoke(IPCChannels.SEND_MESSAGE, {
                 conversationId,
                 content,
-                model,
-                provider,
             });
 
             runInAction(() => {
-                const messages = this.messages.get(conversationId) || [];
-                messages.push(
-                    {
-                        ...result.userMessage,
-                        timestamp: new Date(result.userMessage.timestamp),
-                    },
-                    {
-                        ...result.assistantMessage,
-                        timestamp: new Date(result.assistantMessage.timestamp),
-                    }
-                );
-                this.messages.set(conversationId, messages);
-                this.streamingMessages.add(result.assistantMessage.id);
+                // Messages will be added via event handlers
+                this.streamingMessages.add(response.assistantMessage.id);
             });
         } catch (error) {
             this.rootStore.uiStore.showError('Failed to send message');
@@ -418,34 +369,36 @@ export class MessageStore {
 
     async deleteMessage(id: string): Promise<void> {
         try {
-            await window.electronAPI.invoke(window.electronAPI.channels.MESSAGE_DELETE, { id });
+            await window.electronAPI.invoke(IPCChannels.DELETE_MESSAGE, { id });
 
-            // Will be handled by event
+            // Remove from local state
+            for (const [conversationId, messages] of this.messages.entries()) {
+                const filtered = messages.filter(m => m.id !== id);
+                if (filtered.length !== messages.length) {
+                    runInAction(() => {
+                        this.messages.set(conversationId, filtered);
+                    });
+                    break;
+                }
+            }
         } catch (error) {
             this.rootStore.uiStore.showError('Failed to delete message');
         }
     }
 
-    // Event handlers
     handleMessageCreated(message: Message): void {
         const messages = this.messages.get(message.conversationId) || [];
-        messages.push({
-            ...message,
-            timestamp: new Date(message.timestamp),
-        });
-        this.messages.set(message.conversationId, messages);
+        this.messages.set(message.conversationId, [...messages, message]);
     }
 
     handleMessageUpdated(message: Message): void {
         const messages = this.messages.get(message.conversationId) || [];
         const index = messages.findIndex(m => m.id === message.id);
 
-        if (index >= 0) {
-            messages[index] = {
-                ...message,
-                timestamp: new Date(message.timestamp),
-            };
-            this.messages.set(message.conversationId, [...messages]);
+        if (index !== -1) {
+            const updated = [...messages];
+            updated[index] = message;
+            this.messages.set(message.conversationId, updated);
         }
     }
 
@@ -454,7 +407,7 @@ export class MessageStore {
     }
 
     handleStreamToken(messageId: string, _token: string, fullContent: string): void {
-        // Find and update message
+        // Find and update the message
         for (const [conversationId, messages] of this.messages.entries()) {
             const message = messages.find(m => m.id === messageId);
             if (message) {
@@ -468,7 +421,7 @@ export class MessageStore {
     handleStreamComplete(messageId: string, fullContent: string, tokenCount: number, cost: number): void {
         this.streamingMessages.delete(messageId);
 
-        // Update message with final data
+        // Update message with final content
         for (const [conversationId, messages] of this.messages.entries()) {
             const message = messages.find(m => m.id === messageId);
             if (message) {
@@ -511,7 +464,7 @@ export class SettingsStore {
     constructor(rootStore: RootStore) {
         this.rootStore = rootStore;
         makeAutoObservable(this);
-        
+
         // Only load if electronAPI is available
         if (typeof window !== 'undefined' && window.electronAPI) {
             this.loadSettings();
@@ -528,7 +481,7 @@ export class SettingsStore {
         this.isLoading = true;
 
         try {
-            const settings = await window.electronAPI.invoke(window.electronAPI.channels.SETTINGS_GET, {});
+            const settings = await window.electronAPI.invoke(IPCChannels.GET_SETTINGS, {});
 
             runInAction(() => {
                 this.settings = settings;
@@ -549,7 +502,7 @@ export class SettingsStore {
 
     async updateSettings(updates: Partial<Settings>): Promise<void> {
         try {
-            const settings = await window.electronAPI.invoke(window.electronAPI.channels.SETTINGS_UPDATE, updates);
+            const settings = await window.electronAPI.invoke(IPCChannels.UPDATE_SETTINGS, updates);
 
             runInAction(() => {
                 this.settings = settings;
@@ -563,7 +516,7 @@ export class SettingsStore {
 
     async loadModels(provider: Provider): Promise<void> {
         try {
-            const models = await window.electronAPI.invoke(window.electronAPI.channels.API_MODELS, { provider });
+            const models = await window.electronAPI.invoke(IPCChannels.GET_MODELS, { provider });
 
             runInAction(() => {
                 this.availableModels.set(provider, models);
@@ -575,7 +528,7 @@ export class SettingsStore {
 
     async testConnection(provider: Provider): Promise<boolean> {
         try {
-            const result = await window.electronAPI.invoke(window.electronAPI.channels.API_TEST, { provider });
+            const result = await window.electronAPI.invoke(IPCChannels.TEST_CONNECTION, { provider });
 
             if (result.success) {
                 this.rootStore.uiStore.showSuccess(`${provider} connection successful`);
@@ -601,12 +554,8 @@ export class UIStore {
     isSettingsOpen = false;
     isRenameDialogOpen = false;
     renameConversationId: string | null = null;
-    isExportDialogOpen = false;
-    isImportDialogOpen = false;
-    usageStats: UsageStats | null = null;
 
     private rootStore: RootStore;
-    private toastIdCounter = 0;
 
     constructor(rootStore: RootStore) {
         this.rootStore = rootStore;
@@ -614,17 +563,15 @@ export class UIStore {
     }
 
     showToast(type: 'success' | 'error' | 'info', message: string): void {
-        const id = `toast-${this.toastIdCounter++}`;
+        const id = Date.now().toString();
         this.toasts.push({ id, type, message });
 
-        // Auto remove after 5 seconds
+        // Auto-remove after 5 seconds
         setTimeout(() => {
-            this.dismissToast(id);
+            runInAction(() => {
+                this.toasts = this.toasts.filter(t => t.id !== id);
+            });
         }, 5000);
-    }
-
-    dismissToast(id: string): void {
-        this.toasts = this.toasts.filter(t => t.id !== id);
     }
 
     showSuccess(message: string): void {
@@ -637,6 +584,10 @@ export class UIStore {
 
     showInfo(message: string): void {
         this.showToast('info', message);
+    }
+
+    removeToast(id: string): void {
+        this.toasts = this.toasts.filter(t => t.id !== id);
     }
 
     showSettings(): void {
@@ -656,19 +607,7 @@ export class UIStore {
         this.isRenameDialogOpen = false;
         this.renameConversationId = null;
     }
-
-    async loadUsageStats(): Promise<void> {
-        try {
-            const stats = await window.electronAPI.invoke(window.electronAPI.channels.USAGE_STATS, {});
-
-            runInAction(() => {
-                this.usageStats = stats;
-            });
-        } catch (error) {
-            this.showError('Failed to load usage statistics');
-        }
-    }
 }
 
-// Create singleton instance
+// Export singleton instance
 export const rootStore = new RootStore();
