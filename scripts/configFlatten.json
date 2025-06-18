@@ -1,0 +1,16 @@
+{
+  "PATH_ROOT": "../",
+  "PATH_FLATTENED": "../flattened/",
+  "PATH_IGNORE": [
+    "node_modules",
+    "dist",
+    "scripts",
+    "flattened",
+    ".git",
+    ".idea",
+    ".vscode",
+    ".DS_Store",
+    "package-lock.json"
+  ],
+  "ACKNOWLEDGE": false
+}
