@@ -1,16 +1,18 @@
 {
   "PATH_ROOT": "../",
-  "PATH_FLATTENED": "../flattened/",
+  "PATH_FLATTENED": "../_flattened/",
   "PATH_IGNORE": [
     "node_modules",
     "dist",
     "scripts",
-    "flattened",
+    "_flattened",
+    "_unflatten",
     ".git",
     ".idea",
     ".vscode",
     ".DS_Store",
     "package-lock.json"
   ],
-  "ACKNOWLEDGE": false
+  "ACKNOWLEDGE": false,
+  "UNFLATTEN_DIR": "../_unflatten/"
 }

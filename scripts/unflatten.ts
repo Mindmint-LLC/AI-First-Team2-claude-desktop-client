@@ -1,10 +1,10 @@
-import { readdirSync, statSync, writeFileSync, mkdirSync, readFileSync, unlinkSync, rmdirSync, existsSync } from "fs";
+import { readdirSync, statSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
 import * as path from "path";
 import config from "./configFlatten.json";
 
-const PATH_ROOT = path.resolve(__dirname, config.PATH_ROOT);
 const PATH_FLATTENED = path.resolve(__dirname, config.PATH_FLATTENED);
 const PATH_IGNORE = config.PATH_IGNORE;
+const PATH_UNFLATTEN_DIR = path.resolve(__dirname, config.UNFLATTEN_DIR);
 
 // Require explicit acknowledgement before proceeding
 if (!config.ACKNOWLEDGE) {
@@ -21,42 +21,41 @@ To proceed, set "ACKNOWLEDGE": true in scripts/configFlatten.json
     process.exit(1);
 }
 
-// Helper to delete files and directories recursively, skipping ignored paths
-function deleteExceptIgnored(dir: string, ignore: string[]) {
-    readdirSync(dir).forEach(item => {
-        if (ignore.includes(item)) return;
-        const itemPath = path.join(dir, item);
-        const stats = statSync(itemPath);
-        if (stats.isDirectory()) {
-            deleteExceptIgnored(itemPath, []); // Only ignore at root
-            rmdirSync(itemPath);
-        } else {
-            unlinkSync(itemPath);
-        }
-    });
+// Helper to extract the File property from the header
+function extractFileHeader(content: string): string | null {
+    const match = content.match(/^\s*\/\*\*[\s\S]*?File:\s*([^\s*]+)[\s\S]*?\*\//);
+    return match ? match[1].trim() : null;
 }
 
-// Unflatten: for each file in flattened, reconstruct the original path and write it
-function unflattenDirectory(flattenedPath: string, rootPath: string) {
+function unflattenDirectory(flattenedPath: string, unflattenDir: string) {
     const files = readdirSync(flattenedPath);
     files.forEach(flatFile => {
         const srcPath = path.join(flattenedPath, flatFile);
         if (!statSync(srcPath).isFile()) return;
-        // Reconstruct original relative path
-        const relPath = flatFile.split("--").join(path.sep);
-        const destPath = path.join(rootPath, relPath);
+        const contentBuf = readFileSync(srcPath);
+        const contentStr = contentBuf.toString();
+
+        let destPath: string;
+        if (!flatFile.includes("--")) {
+            // Try to extract File property from header
+            const fileHeader = extractFileHeader(contentStr);
+            if (fileHeader) {
+                destPath = path.join(unflattenDir, fileHeader);
+            } else {
+                destPath = path.join(unflattenDir, flatFile);
+            }
+        } else {
+            // Reconstruct original relative path
+            const relPath = flatFile.split("--").join(path.sep);
+            destPath = path.join(unflattenDir, relPath);
+        }
         const destDir = path.dirname(destPath);
         if (!existsSync(destDir)) {
             mkdirSync(destDir, { recursive: true });
         }
-        const content = readFileSync(srcPath);
-        writeFileSync(destPath, content);
+        writeFileSync(destPath, contentBuf);
         console.log(`Restored: ${destPath}`);
     });
 }
 
-// 1. Delete all files/folders in project root except ignored
-deleteExceptIgnored(PATH_ROOT, PATH_IGNORE);
-
-// 2. Unflatten files from flattened directory
-unflattenDirectory(PATH_FLATTENED, PATH_ROOT);
+unflattenDirectory(PATH_FLATTENED, PATH_UNFLATTEN_DIR);
