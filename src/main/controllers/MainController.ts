@@ -5,7 +5,7 @@
  * Usage: Handles all IPC communication between main and renderer processes
  * Contains: IPC handlers, business logic coordination, stream management
  * Dependencies: DatabaseManager, ProviderRegistry, Electron IPC
- * Iteration: 5
+ * Iteration: 6
  */
 
 import { ipcMain, BrowserWindow } from 'electron';
@@ -213,10 +213,9 @@ export class MainController extends EventEmitter {
 
         ipcMain.handle(IPCChannels.SETTINGS_UPDATE, async (_event, data: { settings: Partial<Settings> }) => {
             return this.handleRequest(data, async (requestData) => {
-                this.db.updateSettings(requestData.settings);
+                const newSettings = this.db.updateSettings(requestData.settings);
 
                 // Update provider registry with new settings
-                const newSettings = this.db.getSettings();
                 this.providerRegistry.updateAdapters(newSettings);
 
                 return newSettings;
@@ -254,18 +253,8 @@ export class MainController extends EventEmitter {
         // Export/Import handlers
         ipcMain.handle(IPCChannels.EXPORT_CONVERSATION, async (_event, data: { conversationId: string }) => {
             return this.handleRequest(data, async (requestData) => {
-                const conversation = this.db.getConversation(requestData.conversationId);
-                if (!conversation) {
-                    throw new Error('Conversation not found');
-                }
-
-                const messages = this.db.getMessages(requestData.conversationId);
-
-                return {
-                    conversation,
-                    messages,
-                    exportedAt: new Date(),
-                };
+                const exportData = this.db.exportConversation(requestData.conversationId);
+                return exportData;
             });
         });
 
@@ -280,7 +269,7 @@ export class MainController extends EventEmitter {
         // Stats handlers
         ipcMain.handle(IPCChannels.STATS_GET, async (_event, data: any) => {
             return this.handleRequest(data || {}, async () => {
-                const stats = this.db.getUsageStats();
+                const stats = this.db.getUsageStatistics();
                 return stats;
             });
         });

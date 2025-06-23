@@ -5,7 +5,7 @@
  * Usage: Instantiate with optional custom path, used by MainController
  * Contains: Database class with CRUD operations for conversations, messages, and settings
  * Dependencies: fs, path, EventEmitter, uuid, electron
- * Iteration: 2
+ * Iteration: 3
  */
 
 import { EventEmitter } from 'events';
@@ -16,12 +16,19 @@ import { app } from 'electron';
 import {
     Conversation,
     Message,
-    DatabaseAdapter,
     Settings,
-    ConversationExport,
-    UsageStatistics,
+    UsageStats,
     DatabaseError,
 } from '../../shared/types';
+import type { Provider } from '../../shared/settings';
+
+// ConversationExport interface for import/export functionality
+interface ConversationExport {
+    conversation: Conversation;
+    messages: Message[];
+    exportedAt: Date;
+    version: string;
+}
 
 // Default settings
 const DEFAULT_SETTINGS: Settings = {
@@ -45,6 +52,28 @@ interface DatabaseData {
     conversations: Record<string, Conversation>;
     messages: Record<string, Message>;
     settings: Settings;
+}
+
+interface MessageInput {
+    conversationId: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    model: string;
+    provider: Provider;
+    tokenCount: number;
+    cost: number;
+    metadata?: Record<string, unknown>;
+    streaming?: boolean;
+    error?: string;
+}
+
+interface MessageUpdate {
+    content?: string;
+    error?: string;
+    tokenCount?: number;
+    cost?: number;
+    streaming?: boolean;
+    metadata?: Record<string, unknown>;
 }
 
 export class Database extends EventEmitter {
@@ -155,7 +184,7 @@ export class Database extends EventEmitter {
                     console.error('[JsonDatabase] Raw data preview:', rawData.substring(0, 200));
 
                     // Backup corrupted file
-                    const backupPath = this.dataPath + '.backup.' + Date.now();
+                    const backupPath = `${this.dataPath  }.backup.${  Date.now()}`;
                     console.log('[JsonDatabase] Backing up corrupted file to:', backupPath);
                     fs.copyFileSync(this.dataPath, backupPath);
 
@@ -198,7 +227,7 @@ export class Database extends EventEmitter {
             console.log('[JsonDatabase] Saving data, size:', jsonData.length, 'bytes');
 
             // Write to temporary file first
-            const tempPath = this.dataPath + '.tmp';
+            const tempPath = `${this.dataPath  }.tmp`;
             fs.writeFileSync(tempPath, jsonData);
 
             // Rename temp file to actual file (atomic operation)
@@ -212,7 +241,7 @@ export class Database extends EventEmitter {
     }
 
     // Conversation methods
-    async createConversation(title: string = 'New Conversation'): Promise<Conversation> {
+    createConversation(title: string = 'New Conversation'): Conversation {
         const id = uuidv4();
         const now = new Date();
 
@@ -237,23 +266,27 @@ export class Database extends EventEmitter {
         return conversation;
     }
 
-    async getConversation(id: string): Promise<Conversation | null> {
+    getConversation(id: string): Conversation | null {
         console.log('[JsonDatabase] Getting conversation:', id);
         return this.data.conversations[id] || null;
     }
 
-    async listConversations(limit: number = 50, offset: number = 0): Promise<Conversation[]> {
+    listConversations(limit: number = 50, offset: number = 0): { conversations: Conversation[]; total: number } {
         console.log('[JsonDatabase] Listing conversations, limit:', limit, 'offset:', offset);
 
-        const conversations = Object.values(this.data.conversations)
-            .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-            .slice(offset, offset + limit);
+        const allConversations = Object.values(this.data.conversations)
+            .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 
-        console.log('[JsonDatabase] Returning', conversations.length, 'conversations');
-        return conversations;
+        const conversations = allConversations.slice(offset, offset + limit);
+
+        console.log('[JsonDatabase] Returning', conversations.length, 'of', allConversations.length, 'conversations');
+        return {
+            conversations,
+            total: allConversations.length
+        };
     }
 
-    async updateConversation(id: string, updates: { title?: string }): Promise<Conversation> {
+    updateConversation(id: string, updates: Partial<Conversation>): Conversation {
         console.log('[JsonDatabase] Updating conversation:', id, 'with:', updates);
 
         const conversation = this.data.conversations[id];
@@ -261,11 +294,10 @@ export class Database extends EventEmitter {
             throw new DatabaseError('Conversation not found', 'update');
         }
 
-        if (updates.title !== undefined) {
-            conversation.title = updates.title;
-        }
-
+        // Apply updates
+        Object.assign(conversation, updates);
         conversation.updatedAt = new Date();
+
         this.saveData();
 
         // Emit event
@@ -274,7 +306,7 @@ export class Database extends EventEmitter {
         return conversation;
     }
 
-    async deleteConversation(id: string): Promise<void> {
+    deleteConversation(id: string): void {
         console.log('[JsonDatabase] Deleting conversation:', id);
 
         const conversation = this.data.conversations[id];
@@ -296,24 +328,10 @@ export class Database extends EventEmitter {
     }
 
     // Message methods
-    async createMessage(
-        conversationId: string,
-        role: 'user' | 'assistant',
-        content: string,
-        metadata?: {
-            model?: string;
-            temperature?: number;
-            maxTokens?: number;
-            promptTokens?: number;
-            completionTokens?: number;
-            totalTokens?: number;
-            estimatedCost?: number;
-            error?: string;
-        }
-    ): Promise<Message> {
-        console.log('[JsonDatabase] Creating message for conversation:', conversationId, 'role:', role);
+    createMessage(messageInput: MessageInput): Message {
+        console.log('[JsonDatabase] Creating message for conversation:', messageInput.conversationId, 'role:', messageInput.role);
 
-        const conversation = this.data.conversations[conversationId];
+        const conversation = this.data.conversations[messageInput.conversationId];
         if (!conversation) {
             throw new DatabaseError('Conversation not found', 'createMessage');
         }
@@ -321,11 +339,17 @@ export class Database extends EventEmitter {
         const id = uuidv4();
         const message: Message = {
             id,
-            conversationId,
-            role,
-            content,
+            conversationId: messageInput.conversationId,
+            role: messageInput.role,
+            content: messageInput.content,
             timestamp: new Date(),
-            ...metadata
+            model: messageInput.model,
+            provider: messageInput.provider,
+            tokenCount: messageInput.tokenCount,
+            cost: messageInput.cost,
+            metadata: messageInput.metadata,
+            streaming: messageInput.streaming,
+            error: messageInput.error,
         };
 
         this.data.messages[id] = message;
@@ -333,12 +357,8 @@ export class Database extends EventEmitter {
         conversation.updatedAt = new Date();
 
         // Update conversation stats
-        if (metadata?.totalTokens) {
-            conversation.totalTokens += metadata.totalTokens;
-        }
-        if (metadata?.estimatedCost) {
-            conversation.estimatedCost += metadata.estimatedCost;
-        }
+        conversation.totalTokens += messageInput.tokenCount;
+        conversation.estimatedCost += messageInput.cost;
 
         this.saveData();
 
@@ -348,12 +368,12 @@ export class Database extends EventEmitter {
         return message;
     }
 
-    async getMessage(id: string): Promise<Message | null> {
+    getMessage(id: string): Message | null {
         console.log('[JsonDatabase] Getting message:', id);
         return this.data.messages[id] || null;
     }
 
-    async getMessages(conversationId: string): Promise<Message[]> {
+    getMessages(conversationId: string): Message[] {
         console.log('[JsonDatabase] Getting messages for conversation:', conversationId);
 
         const conversation = this.data.conversations[conversationId];
@@ -370,7 +390,7 @@ export class Database extends EventEmitter {
         return messages;
     }
 
-    async updateMessage(id: string, updates: { content?: string; error?: string }): Promise<Message> {
+    updateMessage(id: string, updates: MessageUpdate): Message {
         console.log('[JsonDatabase] Updating message:', id);
 
         const message = this.data.messages[id];
@@ -378,11 +398,24 @@ export class Database extends EventEmitter {
             throw new DatabaseError('Message not found', 'update');
         }
 
+        // Apply updates
         if (updates.content !== undefined) {
             message.content = updates.content;
         }
         if (updates.error !== undefined) {
             message.error = updates.error;
+        }
+        if (updates.tokenCount !== undefined) {
+            message.tokenCount = updates.tokenCount;
+        }
+        if (updates.cost !== undefined) {
+            message.cost = updates.cost;
+        }
+        if (updates.streaming !== undefined) {
+            message.streaming = updates.streaming;
+        }
+        if (updates.metadata !== undefined) {
+            message.metadata = updates.metadata;
         }
 
         this.saveData();
@@ -393,7 +426,7 @@ export class Database extends EventEmitter {
         return message;
     }
 
-    async deleteMessage(id: string): Promise<void> {
+    deleteMessage(id: string): void {
         console.log('[JsonDatabase] Deleting message:', id);
 
         const message = this.data.messages[id];
@@ -416,12 +449,12 @@ export class Database extends EventEmitter {
     }
 
     // Settings methods
-    async getSettings(): Promise<Settings> {
+    getSettings(): Settings {
         console.log('[JsonDatabase] Getting settings');
         return { ...this.data.settings };
     }
 
-    async updateSettings(updates: Partial<Settings>): Promise<Settings> {
+    updateSettings(updates: Partial<Settings>): Settings {
         console.log('[JsonDatabase] Updating settings:', Object.keys(updates));
 
         this.data.settings = {
@@ -438,7 +471,7 @@ export class Database extends EventEmitter {
     }
 
     // Search methods
-    async searchMessages(query: string): Promise<Message[]> {
+    searchMessages(query: string): Message[] {
         console.log('[JsonDatabase] Searching messages with query:', query);
 
         const lowerQuery = query.toLowerCase();
@@ -450,20 +483,22 @@ export class Database extends EventEmitter {
         return results;
     }
 
-    async searchConversations(query: string): Promise<Conversation[]> {
+    searchConversations(query: string, limit: number = 50, offset: number = 0): Conversation[] {
         console.log('[JsonDatabase] Searching conversations with query:', query);
 
         const lowerQuery = query.toLowerCase();
-        const results = Object.values(this.data.conversations)
+        const allResults = Object.values(this.data.conversations)
             .filter(conv => conv.title.toLowerCase().includes(lowerQuery))
             .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 
-        console.log('[JsonDatabase] Found', results.length, 'matching conversations');
+        const results = allResults.slice(offset, offset + limit);
+
+        console.log('[JsonDatabase] Found', results.length, 'of', allResults.length, 'matching conversations');
         return results;
     }
 
     // Import/Export methods
-    async exportConversation(id: string): Promise<ConversationExport> {
+    exportConversation(id: string): ConversationExport {
         console.log('[JsonDatabase] Exporting conversation:', id);
 
         const conversation = this.data.conversations[id];
@@ -471,7 +506,7 @@ export class Database extends EventEmitter {
             throw new DatabaseError('Conversation not found', 'export');
         }
 
-        const messages = await this.getMessages(id);
+        const messages = this.getMessages(id);
 
         const exportData: ConversationExport = {
             conversation,
@@ -484,28 +519,26 @@ export class Database extends EventEmitter {
         return exportData;
     }
 
-    async importConversation(data: ConversationExport): Promise<Conversation> {
+    importConversation(data: ConversationExport): Conversation {
         console.log('[JsonDatabase] Importing conversation');
 
         // Create new conversation with new ID
-        const newConversation = await this.createConversation(data.conversation.title);
+        const newConversation = this.createConversation(data.conversation.title);
 
         // Import messages with new IDs
         for (const msg of data.messages) {
-            await this.createMessage(
-                newConversation.id,
-                msg.role,
-                msg.content,
-                {
-                    model: msg.model,
-                    temperature: msg.temperature,
-                    maxTokens: msg.maxTokens,
-                    promptTokens: msg.promptTokens,
-                    completionTokens: msg.completionTokens,
-                    totalTokens: msg.totalTokens,
-                    estimatedCost: msg.estimatedCost,
-                }
-            );
+            this.createMessage({
+                conversationId: newConversation.id,
+                role: msg.role,
+                content: msg.content,
+                model: msg.model,
+                provider: msg.provider,
+                tokenCount: msg.tokenCount,
+                cost: msg.cost,
+                metadata: msg.metadata,
+                streaming: msg.streaming,
+                error: msg.error,
+            });
         }
 
         console.log('[JsonDatabase] Imported conversation with', data.messages.length, 'messages');
@@ -513,51 +546,65 @@ export class Database extends EventEmitter {
     }
 
     // Statistics methods
-    async getUsageStatistics(): Promise<UsageStatistics> {
+    getUsageStatistics(): UsageStats {
         console.log('[JsonDatabase] Calculating usage statistics');
 
         const conversations = Object.values(this.data.conversations);
         const messages = Object.values(this.data.messages);
 
-        const stats: UsageStatistics = {
+        const totalTokens = conversations.reduce((sum, conv) => sum + conv.totalTokens, 0);
+        const totalCost = conversations.reduce((sum, conv) => sum + conv.estimatedCost, 0);
+
+        // Calculate current month stats
+        const now = new Date();
+        const currentMonth = now.getMonth();
+        const currentYear = now.getFullYear();
+
+        const messagesThisMonth = messages.filter(msg => {
+            const msgDate = new Date(msg.timestamp);
+            return msgDate.getMonth() === currentMonth && msgDate.getFullYear() === currentYear;
+        }).length;
+
+        const costThisMonth = conversations
+            .filter(conv => {
+                const convDate = new Date(conv.updatedAt);
+                return convDate.getMonth() === currentMonth && convDate.getFullYear() === currentYear;
+            })
+            .reduce((sum, conv) => sum + conv.estimatedCost, 0);
+
+        // Find most used model and provider
+        const modelCounts: Record<string, number> = {};
+        const providerCounts: Record<string, number> = {};
+
+        messages.forEach(msg => {
+            if (msg.model) {
+                modelCounts[msg.model] = (modelCounts[msg.model] || 0) + 1;
+            }
+            if (msg.provider) {
+                providerCounts[msg.provider] = (providerCounts[msg.provider] || 0) + 1;
+            }
+        });
+
+        const mostUsedModel = Object.entries(modelCounts)
+            .sort(([,a], [,b]) => b - a)[0]?.[0] || 'unknown';
+
+        const mostUsedProvider = Object.entries(providerCounts)
+            .sort(([,a], [,b]) => b - a)[0]?.[0] as Provider || 'claude';
+
+        const stats: UsageStats = {
             totalConversations: conversations.length,
             totalMessages: messages.length,
-            totalTokens: conversations.reduce((sum, conv) => sum + conv.totalTokens, 0),
-            totalCost: conversations.reduce((sum, conv) => sum + conv.estimatedCost, 0),
-            messagesByProvider: {},
-            tokensByProvider: {},
-            costByProvider: {}
+            totalTokens,
+            totalCost,
+            messagesThisMonth,
+            costThisMonth,
+            averageTokensPerMessage: messages.length > 0 ? totalTokens / messages.length : 0,
+            mostUsedModel,
+            mostUsedProvider,
         };
-
-        // Calculate provider statistics
-        for (const msg of messages) {
-            if (msg.model) {
-                const provider = this.getProviderFromModel(msg.model);
-
-                // Messages by provider
-                stats.messagesByProvider[provider] = (stats.messagesByProvider[provider] || 0) + 1;
-
-                // Tokens by provider
-                if (msg.tokenCount) {
-                    stats.tokensByProvider[provider] = (stats.tokensByProvider[provider] || 0) + msg.tokenCount;
-                }
-
-                // Cost by provider
-                if (msg.cost) {
-                    stats.costByProvider[provider] = (stats.costByProvider[provider] || 0) + msg.cost;
-                }
-            }
-        }
 
         console.log('[JsonDatabase] Statistics calculated:', stats);
         return stats;
-    }
-
-    private getProviderFromModel(model: string): string {
-        if (model.includes('claude')) return 'claude';
-        if (model.includes('gpt')) return 'openai';
-        if (model.includes('llama') || model.includes('mistral')) return 'ollama';
-        return 'unknown';
     }
 
     // Cleanup

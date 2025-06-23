@@ -19,7 +19,7 @@ console.log('[Preload] Starting preload script');
 const electronAPI: ElectronAPI = {
     invoke: async (channel: string, data: any): Promise<any> => {
         console.log('[Preload] Invoking channel:', channel);
-        const validChannels = Object.values(IPCChannels);
+        const validChannels:any = Object.values(IPCChannels);
 
         if (validChannels.includes(channel)) {
             try {
@@ -37,7 +37,7 @@ const electronAPI: ElectronAPI = {
 
     on: (channel: string, callback: (data: any) => void): (() => void) => {
         console.log('[Preload] Setting up listener for channel:', channel);
-        const validChannels = Object.values(IPCChannels);
+        const validChannels:any = Object.values(IPCChannels);
 
         if (validChannels.includes(channel)) {
             const listener = (_event: IpcRendererEvent, data: any) => {
@@ -60,7 +60,7 @@ const electronAPI: ElectronAPI = {
 
     once: (channel: string, callback: (data: any) => void): void => {
         console.log('[Preload] Setting up one-time listener for channel:', channel);
-        const validChannels = Object.values(IPCChannels);
+        const validChannels:any = Object.values(IPCChannels);
 
         if (validChannels.includes(channel)) {
             ipcRenderer.once(channel, (_event: IpcRendererEvent, data: any) => {
@@ -75,7 +75,7 @@ const electronAPI: ElectronAPI = {
 
     removeAllListeners: (channel: string): void => {
         console.log('[Preload] Removing all listeners for channel:', channel);
-        const validChannels = Object.values(IPCChannels);
+        const validChannels:any = Object.values(IPCChannels);
 
         if (validChannels.includes(channel)) {
             ipcRenderer.removeAllListeners(channel);
@@ -134,6 +134,7 @@ window.addEventListener('DOMContentLoaded', () => {
         }
 
         console.log('[Preload] Drag start allowed for element:', target);
+        return true;
     }, false);
 
     console.log('[Preload] Drag event handlers installed');
