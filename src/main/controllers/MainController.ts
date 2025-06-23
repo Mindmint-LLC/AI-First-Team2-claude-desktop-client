@@ -5,7 +5,7 @@
  * Usage: Handles all IPC communication between main and renderer processes
  * Contains: IPC handlers, business logic coordination, stream management
  * Dependencies: DatabaseManager, ProviderRegistry, Electron IPC
- * Iteration: 4
+ * Iteration: 5
  */
 
 import { ipcMain, BrowserWindow } from 'electron';
@@ -42,8 +42,6 @@ interface Message {
     error?: string;
 }
 
-
-
 interface StreamEvent {
     type: 'start' | 'token' | 'end' | 'error';
     messageId: string;
@@ -54,21 +52,6 @@ interface StreamEvent {
         tokenCount?: number;
         finishReason?: string;
     };
-}
-
-
-
-interface IPCRequest<T = unknown> {
-    channel: string;
-    data: T;
-    requestId: string;
-}
-
-interface IPCResponse<T = unknown> {
-    success: boolean;
-    data?: T;
-    error?: string;
-    requestId: string;
 }
 
 // Inline constants to avoid module resolution issues
@@ -119,165 +102,165 @@ export class MainController extends EventEmitter {
 
     private setupIPC(): void {
         // Conversation handlers
-        ipcMain.handle(IPCChannels.CONVERSATION_CREATE, async (_event, request: IPCRequest<{ title?: string }>) => {
-            return this.handleRequest(request, async (data) => {
-                const conversation = this.db.createConversation(data.title);
+        ipcMain.handle(IPCChannels.CONVERSATION_CREATE, async (_event, data: { title?: string } | undefined) => {
+            return this.handleRequest(data || {}, async (requestData) => {
+                const conversation = this.db.createConversation(requestData.title);
                 return conversation;
             });
         });
 
-        ipcMain.handle(IPCChannels.CONVERSATION_LIST, async (_event, request: IPCRequest<{ limit?: number; offset?: number }>) => {
-            return this.handleRequest(request, async (data) => {
-                const result = this.db.listConversations(data.limit, data.offset);
+        ipcMain.handle(IPCChannels.CONVERSATION_LIST, async (_event, data: { limit?: number; offset?: number } | undefined) => {
+            return this.handleRequest(data || {}, async (requestData) => {
+                const result = this.db.listConversations(requestData.limit, requestData.offset);
                 return result;
             });
         });
 
-        ipcMain.handle(IPCChannels.CONVERSATION_GET, async (_event, request: IPCRequest<{ id: string }>) => {
-            return this.handleRequest(request, async (data) => {
-                const conversation = this.db.getConversation(data.id);
+        ipcMain.handle(IPCChannels.CONVERSATION_GET, async (_event, data: { id: string }) => {
+            return this.handleRequest(data, async (requestData) => {
+                const conversation = this.db.getConversation(requestData.id);
                 if (!conversation) {
-                    throw new Error(`Conversation ${data.id} not found`);
+                    throw new Error(`Conversation ${requestData.id} not found`);
                 }
                 return conversation;
             });
         });
 
-        ipcMain.handle(IPCChannels.CONVERSATION_UPDATE, async (_event, request: IPCRequest<{ id: string; updates: Partial<Conversation> }>) => {
-            return this.handleRequest(request, async (data) => {
-                const conversation = this.db.updateConversation(data.id, data.updates);
+        ipcMain.handle(IPCChannels.CONVERSATION_UPDATE, async (_event, data: { id: string; updates: Partial<Conversation> }) => {
+            return this.handleRequest(data, async (requestData) => {
+                const conversation = this.db.updateConversation(requestData.id, requestData.updates);
                 return conversation;
             });
         });
 
-        ipcMain.handle(IPCChannels.CONVERSATION_DELETE, async (_event, request: IPCRequest<{ id: string }>) => {
-            return this.handleRequest(request, async (data) => {
-                this.db.deleteConversation(data.id);
+        ipcMain.handle(IPCChannels.CONVERSATION_DELETE, async (_event, data: { id: string }) => {
+            return this.handleRequest(data, async (requestData) => {
+                this.db.deleteConversation(requestData.id);
                 return { success: true };
             });
         });
 
-        ipcMain.handle(IPCChannels.CONVERSATION_SEARCH, async (_event, request: IPCRequest<{ query: string; limit?: number; offset?: number }>) => {
-            return this.handleRequest(request, async (data) => {
-                const conversations = this.db.searchConversations(data.query, data.limit, data.offset);
+        ipcMain.handle(IPCChannels.CONVERSATION_SEARCH, async (_event, data: { query: string; limit?: number; offset?: number }) => {
+            return this.handleRequest(data, async (requestData) => {
+                const conversations = this.db.searchConversations(requestData.query, requestData.limit, requestData.offset);
                 return conversations;
             });
         });
 
         // Message handlers
-        ipcMain.handle(IPCChannels.MESSAGE_SEND, async (_event, request: IPCRequest<{ conversationId: string; content: string; model?: string; provider?: Provider }>) => {
-            return this.handleRequest(request, async (data) => {
+        ipcMain.handle(IPCChannels.MESSAGE_SEND, async (_event, data: { conversationId: string; content: string; model?: string; provider?: Provider }) => {
+            return this.handleRequest(data, async (requestData) => {
                 const settings = this.db.getSettings();
-                const provider = data.provider || settings.provider;
-                const model = data.model || settings.model;
+                const provider = requestData.provider || settings.provider;
+                const model = requestData.model || settings.model;
 
                 // Create user message
                 const userMessage = this.db.createMessage({
-                    conversationId: data.conversationId,
+                    conversationId: requestData.conversationId,
                     role: 'user',
-                    content: data.content,
+                    content: requestData.content,
                     model,
                     provider,
-                    tokenCount: Math.ceil(data.content.length / 4), // Rough estimate
+                    tokenCount: Math.ceil(requestData.content.length / 4), // Rough estimate
                     cost: 0,
                 });
 
                 // Get conversation history
-                const messages = this.db.getMessages(data.conversationId);
+                const messages = this.db.getMessages(requestData.conversationId);
                 const conversationHistory = messages
                     .filter(m => m.role !== 'system')
                     .map(m => ({ role: m.role, content: m.content }));
 
                 // Start streaming response
-                await this.streamMessage(data.conversationId, data.content, conversationHistory, provider, model);
+                await this.streamMessage(requestData.conversationId, requestData.content, conversationHistory, provider, model);
 
                 return userMessage;
             });
         });
 
-        ipcMain.handle(IPCChannels.MESSAGE_LIST, async (_event, request: IPCRequest<{ conversationId: string }>) => {
-            return this.handleRequest(request, async (data) => {
-                const messages = this.db.getMessages(data.conversationId);
+        ipcMain.handle(IPCChannels.MESSAGE_LIST, async (_event, data: { conversationId: string }) => {
+            return this.handleRequest(data, async (requestData) => {
+                const messages = this.db.getMessages(requestData.conversationId);
                 return messages;
             });
         });
 
-        ipcMain.handle(IPCChannels.MESSAGE_DELETE, async (_event, request: IPCRequest<{ id: string }>) => {
-            return this.handleRequest(request, async (data) => {
-                this.db.deleteMessage(data.id);
+        ipcMain.handle(IPCChannels.MESSAGE_DELETE, async (_event, data: { id: string }) => {
+            return this.handleRequest(data, async (requestData) => {
+                this.db.deleteMessage(requestData.id);
                 return { success: true };
             });
         });
 
-        ipcMain.handle(IPCChannels.MESSAGE_STOP, async (_event, request: IPCRequest<{ messageId: string }>) => {
-            return this.handleRequest(request, async (data) => {
-                const adapter = this.activeStreams.get(data.messageId);
+        ipcMain.handle(IPCChannels.MESSAGE_STOP, async (_event, data: { messageId: string }) => {
+            return this.handleRequest(data, async (requestData) => {
+                const adapter = this.activeStreams.get(requestData.messageId);
                 if (adapter) {
-                    adapter.abortStream(data.messageId);
-                    this.activeStreams.delete(data.messageId);
+                    adapter.abortStream(requestData.messageId);
+                    this.activeStreams.delete(requestData.messageId);
                 }
                 return { success: true };
             });
         });
 
         // Settings handlers
-        ipcMain.handle(IPCChannels.SETTINGS_GET, async (_event, request: IPCRequest<Record<string, never>>) => {
-            return this.handleRequest(request, async () => {
+        ipcMain.handle(IPCChannels.SETTINGS_GET, async (_event, data: any) => {
+            return this.handleRequest(data || {}, async () => {
                 const settings = this.db.getSettings();
                 return settings;
             });
         });
 
-        ipcMain.handle(IPCChannels.SETTINGS_UPDATE, async (_event, request: IPCRequest<{ settings: Partial<Settings> }>) => {
-            return this.handleRequest(request, async (data) => {
-                this.db.updateSettings(data.settings);
-                
+        ipcMain.handle(IPCChannels.SETTINGS_UPDATE, async (_event, data: { settings: Partial<Settings> }) => {
+            return this.handleRequest(data, async (requestData) => {
+                this.db.updateSettings(requestData.settings);
+
                 // Update provider registry with new settings
                 const newSettings = this.db.getSettings();
                 this.providerRegistry.updateAdapters(newSettings);
-                
+
                 return newSettings;
             });
         });
 
-        ipcMain.handle(IPCChannels.SETTINGS_SET_API_KEY, async (_event, request: IPCRequest<{ provider: Provider; apiKey: string }>) => {
-            return this.handleRequest(request, async (data) => {
+        ipcMain.handle(IPCChannels.SETTINGS_SET_API_KEY, async (_event, data: { provider: Provider; apiKey: string }) => {
+            return this.handleRequest(data, async (requestData) => {
                 const settings = this.db.getSettings();
-                settings.apiKeys[data.provider] = data.apiKey;
+                settings.apiKeys[requestData.provider] = requestData.apiKey;
                 this.db.updateSettings({ apiKeys: settings.apiKeys });
-                
+
                 // Update provider registry
                 this.providerRegistry.updateAdapters(settings);
-                
+
                 return { success: true };
             });
         });
 
         // API handlers
-        ipcMain.handle(IPCChannels.API_TEST, async (_event, request: IPCRequest<{ provider: Provider }>) => {
-            return this.handleRequest(request, async (data) => {
-                const result = await this.providerRegistry.testProvider(data.provider);
+        ipcMain.handle(IPCChannels.API_TEST, async (_event, data: { provider: Provider }) => {
+            return this.handleRequest(data, async (requestData) => {
+                const result = await this.providerRegistry.testProvider(requestData.provider);
                 return { success: result };
             });
         });
 
-        ipcMain.handle(IPCChannels.API_MODELS, async (_event, request: IPCRequest<{ provider: Provider }>) => {
-            return this.handleRequest(request, async (data) => {
-                const models = await this.providerRegistry.getModels(data.provider);
+        ipcMain.handle(IPCChannels.API_MODELS, async (_event, data: { provider: Provider }) => {
+            return this.handleRequest(data, async (requestData) => {
+                const models = await this.providerRegistry.getModels(requestData.provider);
                 return models;
             });
         });
 
         // Export/Import handlers
-        ipcMain.handle(IPCChannels.EXPORT_CONVERSATION, async (_event, request: IPCRequest<{ conversationId: string }>) => {
-            return this.handleRequest(request, async (data) => {
-                const conversation = this.db.getConversation(data.conversationId);
+        ipcMain.handle(IPCChannels.EXPORT_CONVERSATION, async (_event, data: { conversationId: string }) => {
+            return this.handleRequest(data, async (requestData) => {
+                const conversation = this.db.getConversation(requestData.conversationId);
                 if (!conversation) {
                     throw new Error('Conversation not found');
                 }
-                
-                const messages = this.db.getMessages(data.conversationId);
-                
+
+                const messages = this.db.getMessages(requestData.conversationId);
+
                 return {
                     conversation,
                     messages,
@@ -286,8 +269,8 @@ export class MainController extends EventEmitter {
             });
         });
 
-        ipcMain.handle(IPCChannels.IMPORT_CONVERSATION, async (_event, request: IPCRequest<{ data: unknown }>) => {
-            return this.handleRequest(request, async (_data) => {
+        ipcMain.handle(IPCChannels.IMPORT_CONVERSATION, async (_event, data: { data: unknown }) => {
+            return this.handleRequest(data, async (_requestData) => {
                 // Implementation for importing conversations
                 // This would need validation and proper error handling
                 throw new Error('Import not yet implemented');
@@ -295,8 +278,8 @@ export class MainController extends EventEmitter {
         });
 
         // Stats handlers
-        ipcMain.handle(IPCChannels.STATS_GET, async (_event, request: IPCRequest<Record<string, never>>) => {
-            return this.handleRequest(request, async () => {
+        ipcMain.handle(IPCChannels.STATS_GET, async (_event, data: any) => {
+            return this.handleRequest(data || {}, async () => {
                 const stats = this.db.getUsageStats();
                 return stats;
             });
@@ -316,7 +299,7 @@ export class MainController extends EventEmitter {
             });
 
             this.db.on('conversation:deleted', (id: string) => {
-                this.mainWindow?.webContents.send('conversation:deleted', id);
+                this.mainWindow?.webContents.send('conversation:deleted', { id });
             });
 
             this.db.on('message:created', (message: Message) => {
@@ -328,10 +311,10 @@ export class MainController extends EventEmitter {
             });
 
             this.db.on('message:deleted', (id: string) => {
-                this.mainWindow?.webContents.send('message:deleted', id);
+                this.mainWindow?.webContents.send('message:deleted', { id });
             });
 
-            this.db.on('settings:updated', (settings: Partial<Settings>) => {
+            this.db.on('settings:updated', (settings: Settings) => {
                 this.mainWindow?.webContents.send('settings:updated', settings);
             });
         }
@@ -339,14 +322,14 @@ export class MainController extends EventEmitter {
 
     private async streamMessage(
         conversationId: string,
-        userMessage: string,
-        conversationHistory: Array<{role: string, content: string}>,
+        content: string,
+        conversationHistory: Array<{ role: string; content: string }>,
         provider: Provider,
         model: string
     ): Promise<void> {
         const adapter = this.providerRegistry.getAdapter(provider);
         if (!adapter) {
-            throw new Error(`Provider ${provider} not available`);
+            throw new Error(`No adapter for provider: ${provider}`);
         }
 
         // Create assistant message placeholder
@@ -361,9 +344,12 @@ export class MainController extends EventEmitter {
             streaming: true,
         });
 
+        // Store active stream
         this.activeStreams.set(assistantMessage.id, adapter);
 
-        // Set up stream event handlers
+        let accumulatedContent = '';
+        let outputTokens = 0;
+
         const onStreamStart = (event: StreamEvent) => {
             this.mainWindow?.webContents.send(IPCChannels.STREAM_START, {
                 ...event,
@@ -372,32 +358,28 @@ export class MainController extends EventEmitter {
         };
 
         const onStreamToken = (event: StreamEvent) => {
-            // Update message content incrementally
-            const currentMessage = this.db.getMessage(assistantMessage.id);
-            if (currentMessage) {
-                const updatedContent = currentMessage.content + (event.content || '');
-                this.db.updateMessage(assistantMessage.id, { content: updatedContent });
-                
-                this.mainWindow?.webContents.send(IPCChannels.STREAM_TOKEN, {
-                    ...event,
-                    messageId: assistantMessage.id,
-                });
+            if (event.content) {
+                accumulatedContent += event.content;
+                outputTokens++;
             }
+            this.mainWindow?.webContents.send(IPCChannels.STREAM_TOKEN, {
+                ...event,
+                messageId: assistantMessage.id,
+            });
         };
 
         const onStreamEnd = (event: StreamEvent) => {
-            // Finalize message
-            const currentMessage = this.db.getMessage(assistantMessage.id);
-            if (currentMessage) {
-                const finalTokenCount = Math.ceil(currentMessage.content.length / 4); // Rough estimate
-                const cost = this.calculateCost(provider, model, 0, finalTokenCount);
-                
-                this.db.updateMessage(assistantMessage.id, {
-                    streaming: false,
-                    tokenCount: finalTokenCount,
-                    cost,
-                });
-            }
+            // Update message with final content
+            const inputTokens = conversationHistory.reduce((acc, msg) => acc + Math.ceil(msg.content.length / 4), 0);
+            const cost = this.calculateCost(provider, model, inputTokens, outputTokens);
+
+            this.db.updateMessage(assistantMessage.id, {
+                content: accumulatedContent,
+                tokenCount: outputTokens,
+                cost,
+                streaming: false,
+                metadata: event.metadata,
+            });
 
             this.activeStreams.delete(assistantMessage.id);
             this.mainWindow?.webContents.send(IPCChannels.STREAM_END, {
@@ -407,7 +389,6 @@ export class MainController extends EventEmitter {
         };
 
         const onStreamError = (event: StreamEvent) => {
-            // Mark message as errored
             this.db.updateMessage(assistantMessage.id, {
                 streaming: false,
                 error: event.error,
@@ -420,7 +401,7 @@ export class MainController extends EventEmitter {
             });
         };
 
-        // Attach event listeners
+        // Set up stream listeners
         adapter.on('stream:start', onStreamStart);
         adapter.on('stream:token', onStreamToken);
         adapter.on('stream:end', onStreamEnd);
@@ -428,7 +409,7 @@ export class MainController extends EventEmitter {
 
         try {
             // Start streaming
-            await adapter.streamMessage(assistantMessage.id, userMessage, conversationHistory);
+            await adapter.streamMessage(assistantMessage.id, content, conversationHistory);
         } catch (error) {
             onStreamError({
                 type: 'error',
@@ -457,23 +438,15 @@ export class MainController extends EventEmitter {
     }
 
     private async handleRequest<T, R>(
-        request: IPCRequest<T>,
+        data: T,
         handler: (data: T) => Promise<R> | R
-    ): Promise<IPCResponse<R>> {
+    ): Promise<R> {
         try {
-            const result = await handler(request.data);
-            return {
-                success: true,
-                data: result,
-                requestId: request.requestId,
-            };
+            const result = await handler(data);
+            return result;
         } catch (error) {
-            console.error(`IPC Error for ${request.channel}:`, error);
-            return {
-                success: false,
-                error: (error as Error).message,
-                requestId: request.requestId,
-            };
+            console.error(`IPC Error for undefined:`, error);
+            throw error;
         }
     }
 

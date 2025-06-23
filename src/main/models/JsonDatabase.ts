@@ -1,66 +1,35 @@
-import * as path from 'path';
+/**
+ * File: src/main/models/JsonDatabase.ts
+ * Module: Model - JSON-based Database Implementation
+ * Purpose: Provides a file-based database using JSON for data persistence
+ * Usage: Instantiate with optional custom path, used by MainController
+ * Contains: Database class with CRUD operations for conversations, messages, and settings
+ * Dependencies: fs, path, EventEmitter, uuid, electron
+ * Iteration: 2
+ */
+
+import { EventEmitter } from 'events';
 import * as fs from 'fs';
+import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { app } from 'electron';
-import { EventEmitter } from 'events';
-import type { Settings, Provider } from '../../shared/settings';
-
-// Inline types to avoid module resolution issues
-interface Conversation {
-    id: string;
-    title: string;
-    createdAt: Date;
-    updatedAt: Date;
-    messageIds: string[];
-    totalTokens: number;
-    estimatedCost: number;
-    metadata?: Record<string, unknown>;
-}
-
-interface Message {
-    id: string;
-    conversationId: string;
-    role: 'user' | 'assistant' | 'system';
-    content: string;
-    timestamp: Date;
-    model: string;
-    provider: Provider;
-    tokenCount: number;
-    cost: number;
-    metadata?: Record<string, unknown>;
-    streaming?: boolean;
-    error?: string;
-}
-
-interface Usage {
-    input: number;
-    output: number;
-    total: number;
-    cost?: {
-        input: number;
-        output: number;
-        total: number;
-    };
-}
-
-class DatabaseError extends Error {
-    constructor(
-        message: string,
-        public operation: string,
-        public originalError?: Error
-    ) {
-        super(message);
-        this.name = 'DatabaseError';
-    }
-}
+import {
+    Conversation,
+    Message,
+    DatabaseAdapter,
+    Settings,
+    ConversationExport,
+    UsageStatistics,
+    DatabaseError,
+} from '../../shared/types';
 
 // Default settings
 const DEFAULT_SETTINGS: Settings = {
-    provider: 'claude' as const,
-    model: 'claude-3-sonnet-20240229',
+    provider: 'claude',
+    model: 'claude-3-opus-20240229',
     temperature: 0.7,
     maxTokens: 2048,
-    systemPrompt: 'You are a helpful, harmless, and honest AI assistant.',
+    systemPrompt: '',
     apiKeys: {
         claude: '',
         openai: '',
@@ -88,14 +57,17 @@ export class Database extends EventEmitter {
 
     constructor(dbPath?: string) {
         super();
-        
+
         // Use provided path or default to app data directory
         const defaultPath = path.join(app.getPath('userData'), 'conversations.json');
         this.dataPath = dbPath || defaultPath;
-        
+
+        console.log('[JsonDatabase] Initializing database at:', this.dataPath);
+
         // Ensure directory exists
         const dir = path.dirname(this.dataPath);
         if (!fs.existsSync(dir)) {
+            console.log('[JsonDatabase] Creating directory:', dir);
             fs.mkdirSync(dir, { recursive: true });
         }
 
@@ -104,36 +76,99 @@ export class Database extends EventEmitter {
 
     private loadData(): void {
         try {
-            if (fs.existsSync(this.dataPath)) {
-                const rawData = fs.readFileSync(this.dataPath, 'utf8');
-                const parsedData = JSON.parse(rawData);
-                
-                // Convert date strings back to Date objects
-                this.data = {
-                    conversations: {},
-                    messages: {},
-                    settings: { ...DEFAULT_SETTINGS, ...parsedData.settings }
-                };
+            console.log('[JsonDatabase] Loading data from:', this.dataPath);
 
-                // Process conversations
-                for (const [id, conv] of Object.entries(parsedData.conversations || {})) {
-                    const conversation = conv as any;
-                    this.data.conversations[id] = {
-                        ...conversation,
-                        createdAt: new Date(conversation.createdAt),
-                        updatedAt: new Date(conversation.updatedAt)
+            if (fs.existsSync(this.dataPath)) {
+                const stats = fs.statSync(this.dataPath);
+                console.log('[JsonDatabase] File exists, size:', stats.size, 'bytes');
+
+                // Check if file is empty
+                if (stats.size === 0) {
+                    console.warn('[JsonDatabase] File is empty, initializing with defaults');
+                    this.data = {
+                        conversations: {},
+                        messages: {},
+                        settings: { ...DEFAULT_SETTINGS }
                     };
+                    this.saveData();
+                    return;
                 }
 
-                // Process messages
-                for (const [id, msg] of Object.entries(parsedData.messages || {})) {
-                    const message = msg as any;
-                    this.data.messages[id] = {
-                        ...message,
-                        timestamp: new Date(message.timestamp)
+                const rawData = fs.readFileSync(this.dataPath, 'utf8');
+                console.log('[JsonDatabase] Raw data length:', rawData.length);
+
+                // Check if data is empty or just whitespace
+                if (!rawData.trim()) {
+                    console.warn('[JsonDatabase] File contains only whitespace, initializing with defaults');
+                    this.data = {
+                        conversations: {},
+                        messages: {},
+                        settings: { ...DEFAULT_SETTINGS }
                     };
+                    this.saveData();
+                    return;
+                }
+
+                try {
+                    const parsedData = JSON.parse(rawData);
+                    console.log('[JsonDatabase] Successfully parsed JSON data');
+
+                    // Convert date strings back to Date objects
+                    this.data = {
+                        conversations: {},
+                        messages: {},
+                        settings: { ...DEFAULT_SETTINGS, ...(parsedData.settings || {}) }
+                    };
+
+                    // Process conversations
+                    if (parsedData.conversations) {
+                        const conversationCount = Object.keys(parsedData.conversations).length;
+                        console.log('[JsonDatabase] Processing', conversationCount, 'conversations');
+
+                        for (const [id, conv] of Object.entries(parsedData.conversations)) {
+                            const conversation = conv as any;
+                            this.data.conversations[id] = {
+                                ...conversation,
+                                createdAt: new Date(conversation.createdAt),
+                                updatedAt: new Date(conversation.updatedAt)
+                            };
+                        }
+                    }
+
+                    // Process messages
+                    if (parsedData.messages) {
+                        const messageCount = Object.keys(parsedData.messages).length;
+                        console.log('[JsonDatabase] Processing', messageCount, 'messages');
+
+                        for (const [id, msg] of Object.entries(parsedData.messages)) {
+                            const message = msg as any;
+                            this.data.messages[id] = {
+                                ...message,
+                                timestamp: new Date(message.timestamp)
+                            };
+                        }
+                    }
+
+                    console.log('[JsonDatabase] Data loaded successfully');
+                } catch (parseError) {
+                    console.error('[JsonDatabase] JSON parse error:', parseError);
+                    console.error('[JsonDatabase] Raw data preview:', rawData.substring(0, 200));
+
+                    // Backup corrupted file
+                    const backupPath = this.dataPath + '.backup.' + Date.now();
+                    console.log('[JsonDatabase] Backing up corrupted file to:', backupPath);
+                    fs.copyFileSync(this.dataPath, backupPath);
+
+                    // Initialize with defaults
+                    this.data = {
+                        conversations: {},
+                        messages: {},
+                        settings: { ...DEFAULT_SETTINGS }
+                    };
+                    this.saveData();
                 }
             } else {
+                console.log('[JsonDatabase] Database file does not exist, creating new one');
                 this.data = {
                     conversations: {},
                     messages: {},
@@ -142,20 +177,36 @@ export class Database extends EventEmitter {
                 this.saveData();
             }
         } catch (error) {
-            console.error('Failed to load database:', error);
+            console.error('[JsonDatabase] Failed to load database:', error);
             this.data = {
                 conversations: {},
                 messages: {},
                 settings: { ...DEFAULT_SETTINGS }
             };
+            // Try to save the default data
+            try {
+                this.saveData();
+            } catch (saveError) {
+                console.error('[JsonDatabase] Failed to save default data:', saveError);
+            }
         }
     }
 
     private saveData(): void {
         try {
-            fs.writeFileSync(this.dataPath, JSON.stringify(this.data, null, 2));
+            const jsonData = JSON.stringify(this.data, null, 2);
+            console.log('[JsonDatabase] Saving data, size:', jsonData.length, 'bytes');
+
+            // Write to temporary file first
+            const tempPath = this.dataPath + '.tmp';
+            fs.writeFileSync(tempPath, jsonData);
+
+            // Rename temp file to actual file (atomic operation)
+            fs.renameSync(tempPath, this.dataPath);
+
+            console.log('[JsonDatabase] Data saved successfully');
         } catch (error) {
-            console.error('Failed to save database:', error);
+            console.error('[JsonDatabase] Failed to save database:', error);
             throw new DatabaseError('Failed to save data', 'save', error as Error);
         }
     }
@@ -164,7 +215,7 @@ export class Database extends EventEmitter {
     async createConversation(title: string = 'New Conversation'): Promise<Conversation> {
         const id = uuidv4();
         const now = new Date();
-        
+
         const conversation: Conversation = {
             id,
             title,
@@ -175,28 +226,36 @@ export class Database extends EventEmitter {
             estimatedCost: 0
         };
 
+        console.log('[JsonDatabase] Creating conversation:', id, 'with title:', title);
+
         this.data.conversations[id] = conversation;
         this.saveData();
-        
+
         // Emit event
         this.emit('conversation:created', conversation);
-        
+
         return conversation;
     }
 
     async getConversation(id: string): Promise<Conversation | null> {
+        console.log('[JsonDatabase] Getting conversation:', id);
         return this.data.conversations[id] || null;
     }
 
     async listConversations(limit: number = 50, offset: number = 0): Promise<Conversation[]> {
+        console.log('[JsonDatabase] Listing conversations, limit:', limit, 'offset:', offset);
+
         const conversations = Object.values(this.data.conversations)
             .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
             .slice(offset, offset + limit);
-        
+
+        console.log('[JsonDatabase] Returning', conversations.length, 'conversations');
         return conversations;
     }
 
-    async updateConversation(id: string, updates: { title?: string }): Promise<void> {
+    async updateConversation(id: string, updates: { title?: string }): Promise<Conversation> {
+        console.log('[JsonDatabase] Updating conversation:', id, 'with:', updates);
+
         const conversation = this.data.conversations[id];
         if (!conversation) {
             throw new DatabaseError('Conversation not found', 'update');
@@ -205,223 +264,305 @@ export class Database extends EventEmitter {
         if (updates.title !== undefined) {
             conversation.title = updates.title;
         }
-        conversation.updatedAt = new Date();
 
+        conversation.updatedAt = new Date();
         this.saveData();
+
+        // Emit event
         this.emit('conversation:updated', conversation);
+
+        return conversation;
     }
 
     async deleteConversation(id: string): Promise<void> {
+        console.log('[JsonDatabase] Deleting conversation:', id);
+
         const conversation = this.data.conversations[id];
         if (!conversation) {
-            return; // Already deleted
+            throw new DatabaseError('Conversation not found', 'delete');
         }
 
-        // Delete associated messages
+        // Delete all messages in the conversation
         for (const messageId of conversation.messageIds) {
             delete this.data.messages[messageId];
         }
 
+        // Delete the conversation
         delete this.data.conversations[id];
         this.saveData();
-        
-        this.emit('conversation:deleted', { id });
+
+        // Emit event
+        this.emit('conversation:deleted', id);
     }
 
     // Message methods
-    createMessage(messageData: {
-        conversationId: string;
-        role: 'user' | 'assistant' | 'system';
-        content: string;
-        model: string;
-        provider: Provider;
-        tokenCount: number;
-        cost: number;
-        streaming?: boolean;
-    }): Message {
+    async createMessage(
+        conversationId: string,
+        role: 'user' | 'assistant',
+        content: string,
+        metadata?: {
+            model?: string;
+            temperature?: number;
+            maxTokens?: number;
+            promptTokens?: number;
+            completionTokens?: number;
+            totalTokens?: number;
+            estimatedCost?: number;
+            error?: string;
+        }
+    ): Promise<Message> {
+        console.log('[JsonDatabase] Creating message for conversation:', conversationId, 'role:', role);
+
+        const conversation = this.data.conversations[conversationId];
+        if (!conversation) {
+            throw new DatabaseError('Conversation not found', 'createMessage');
+        }
+
         const id = uuidv4();
-        const now = new Date();
-        
-        const newMessage: Message = {
+        const message: Message = {
             id,
-            conversationId: messageData.conversationId,
-            role: messageData.role,
-            content: messageData.content,
-            timestamp: now,
-            model: messageData.model,
-            provider: messageData.provider,
-            tokenCount: messageData.tokenCount,
-            cost: messageData.cost,
-            streaming: messageData.streaming,
+            conversationId,
+            role,
+            content,
+            timestamp: new Date(),
+            ...metadata
         };
 
-        this.data.messages[id] = newMessage;
+        this.data.messages[id] = message;
+        conversation.messageIds.push(id);
+        conversation.updatedAt = new Date();
 
-        // Update conversation
-        const conversation = this.data.conversations[messageData.conversationId];
-        if (conversation) {
-            conversation.messageIds.push(id);
-            conversation.updatedAt = now;
-            conversation.totalTokens += messageData.tokenCount;
-            conversation.estimatedCost += messageData.cost;
+        // Update conversation stats
+        if (metadata?.totalTokens) {
+            conversation.totalTokens += metadata.totalTokens;
+        }
+        if (metadata?.estimatedCost) {
+            conversation.estimatedCost += metadata.estimatedCost;
         }
 
         this.saveData();
-        
+
         // Emit event
-        this.emit('message:created', newMessage);
-        
-        return newMessage;
+        this.emit('message:created', message);
+
+        return message;
     }
 
-    getMessages(conversationId: string): Message[] {
+    async getMessage(id: string): Promise<Message | null> {
+        console.log('[JsonDatabase] Getting message:', id);
+        return this.data.messages[id] || null;
+    }
+
+    async getMessages(conversationId: string): Promise<Message[]> {
+        console.log('[JsonDatabase] Getting messages for conversation:', conversationId);
+
         const conversation = this.data.conversations[conversationId];
         if (!conversation) {
             return [];
         }
 
-        return conversation.messageIds
+        const messages = conversation.messageIds
             .map(id => this.data.messages[id])
-            .filter(Boolean)
+            .filter(msg => msg !== undefined)
             .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+        console.log('[JsonDatabase] Returning', messages.length, 'messages');
+        return messages;
     }
 
-    getMessage(id: string): Message | null {
-        return this.data.messages[id] || null;
-    }
+    async updateMessage(id: string, updates: { content?: string; error?: string }): Promise<Message> {
+        console.log('[JsonDatabase] Updating message:', id);
 
-    updateMessage(messageId: string, updates: { 
-        content?: string; 
-        streaming?: boolean; 
-        tokenCount?: number; 
-        cost?: number; 
-        error?: string 
-    }): void {
-        const message = this.data.messages[messageId];
+        const message = this.data.messages[id];
         if (!message) {
             throw new DatabaseError('Message not found', 'update');
         }
 
-        if (updates.content !== undefined) message.content = updates.content;
-        if (updates.streaming !== undefined) message.streaming = updates.streaming;
-        if (updates.tokenCount !== undefined) message.tokenCount = updates.tokenCount;
-        if (updates.cost !== undefined) message.cost = updates.cost;
-        if (updates.error !== undefined) message.error = updates.error;
+        if (updates.content !== undefined) {
+            message.content = updates.content;
+        }
+        if (updates.error !== undefined) {
+            message.error = updates.error;
+        }
 
         this.saveData();
+
+        // Emit event
         this.emit('message:updated', message);
+
+        return message;
     }
 
-    // Settings methods
-    getSettings(): Settings {
-        return { ...this.data.settings };
-    }
+    async deleteMessage(id: string): Promise<void> {
+        console.log('[JsonDatabase] Deleting message:', id);
 
-    updateSettings(updates: Partial<Settings>): void {
-        this.data.settings = { ...this.data.settings, ...updates };
-        this.saveData();
-        this.emit('settings:updated', this.data.settings);
-    }
-
-    // Utility methods
-    close(): void {
-        this.saveData();
-    }
-
-    vacuum(): void {
-        // No-op for JSON database
-    }
-
-    // Search methods
-    searchMessages(query: string, limit: number = 50): Message[] {
-        const messages = Object.values(this.data.messages)
-            .filter(message =>
-                message.content.toLowerCase().includes(query.toLowerCase())
-            )
-            .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-            .slice(0, limit);
-
-        return messages;
-    }
-
-    searchConversations(query: string, limit: number = 50, offset: number = 0): Conversation[] {
-        const conversations = Object.values(this.data.conversations)
-            .filter(conversation =>
-                conversation.title.toLowerCase().includes(query.toLowerCase())
-            )
-            .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-            .slice(offset, offset + limit);
-
-        return conversations;
-    }
-
-    deleteMessage(messageId: string): void {
-        const message = this.data.messages[messageId];
+        const message = this.data.messages[id];
         if (!message) {
-            return; // Already deleted
+            throw new DatabaseError('Message not found', 'delete');
         }
 
         // Remove from conversation
         const conversation = this.data.conversations[message.conversationId];
         if (conversation) {
-            conversation.messageIds = conversation.messageIds.filter(id => id !== messageId);
-            conversation.totalTokens -= message.tokenCount;
-            conversation.estimatedCost -= message.cost;
+            conversation.messageIds = conversation.messageIds.filter(msgId => msgId !== id);
             conversation.updatedAt = new Date();
         }
 
-        delete this.data.messages[messageId];
+        delete this.data.messages[id];
         this.saveData();
 
-        this.emit('message:deleted', { id: messageId });
+        // Emit event
+        this.emit('message:deleted', id);
     }
 
-    getUsageStats(): any {
-        const messages = Object.values(this.data.messages);
-        const conversations = Object.values(this.data.conversations);
+    // Settings methods
+    async getSettings(): Promise<Settings> {
+        console.log('[JsonDatabase] Getting settings');
+        return { ...this.data.settings };
+    }
 
-        const totalMessages = messages.length;
-        const totalConversations = conversations.length;
-        const totalTokens = messages.reduce((sum, msg) => sum + msg.tokenCount, 0);
-        const totalCost = messages.reduce((sum, msg) => sum + msg.cost, 0);
+    async updateSettings(updates: Partial<Settings>): Promise<Settings> {
+        console.log('[JsonDatabase] Updating settings:', Object.keys(updates));
 
-        // Get current month stats
-        const now = new Date();
-        const currentMonth = now.getMonth();
-        const currentYear = now.getFullYear();
-
-        const thisMonthMessages = messages.filter(msg => {
-            const msgDate = new Date(msg.timestamp);
-            return msgDate.getMonth() === currentMonth && msgDate.getFullYear() === currentYear;
-        });
-
-        const messagesThisMonth = thisMonthMessages.length;
-        const costThisMonth = thisMonthMessages.reduce((sum, msg) => sum + msg.cost, 0);
-
-        // Most used model and provider
-        const modelCounts: Record<string, number> = {};
-        const providerCounts: Record<string, number> = {};
-
-        messages.forEach(msg => {
-            modelCounts[msg.model] = (modelCounts[msg.model] || 0) + 1;
-            providerCounts[msg.provider] = (providerCounts[msg.provider] || 0) + 1;
-        });
-
-        const mostUsedModel = Object.entries(modelCounts)
-            .sort(([,a], [,b]) => b - a)[0]?.[0] || '';
-        const mostUsedProvider = Object.entries(providerCounts)
-            .sort(([,a], [,b]) => b - a)[0]?.[0] || 'claude';
-
-        return {
-            totalConversations,
-            totalMessages,
-            totalTokens,
-            totalCost,
-            messagesThisMonth,
-            costThisMonth,
-            averageTokensPerMessage: totalMessages > 0 ? totalTokens / totalMessages : 0,
-            mostUsedModel,
-            mostUsedProvider
+        this.data.settings = {
+            ...this.data.settings,
+            ...updates
         };
+
+        this.saveData();
+
+        // Emit event
+        this.emit('settings:updated', this.data.settings);
+
+        return { ...this.data.settings };
+    }
+
+    // Search methods
+    async searchMessages(query: string): Promise<Message[]> {
+        console.log('[JsonDatabase] Searching messages with query:', query);
+
+        const lowerQuery = query.toLowerCase();
+        const results = Object.values(this.data.messages)
+            .filter(msg => msg.content.toLowerCase().includes(lowerQuery))
+            .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+        console.log('[JsonDatabase] Found', results.length, 'matching messages');
+        return results;
+    }
+
+    async searchConversations(query: string): Promise<Conversation[]> {
+        console.log('[JsonDatabase] Searching conversations with query:', query);
+
+        const lowerQuery = query.toLowerCase();
+        const results = Object.values(this.data.conversations)
+            .filter(conv => conv.title.toLowerCase().includes(lowerQuery))
+            .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+
+        console.log('[JsonDatabase] Found', results.length, 'matching conversations');
+        return results;
+    }
+
+    // Import/Export methods
+    async exportConversation(id: string): Promise<ConversationExport> {
+        console.log('[JsonDatabase] Exporting conversation:', id);
+
+        const conversation = this.data.conversations[id];
+        if (!conversation) {
+            throw new DatabaseError('Conversation not found', 'export');
+        }
+
+        const messages = await this.getMessages(id);
+
+        const exportData: ConversationExport = {
+            conversation,
+            messages,
+            exportedAt: new Date(),
+            version: '1.0'
+        };
+
+        console.log('[JsonDatabase] Exported conversation with', messages.length, 'messages');
+        return exportData;
+    }
+
+    async importConversation(data: ConversationExport): Promise<Conversation> {
+        console.log('[JsonDatabase] Importing conversation');
+
+        // Create new conversation with new ID
+        const newConversation = await this.createConversation(data.conversation.title);
+
+        // Import messages with new IDs
+        for (const msg of data.messages) {
+            await this.createMessage(
+                newConversation.id,
+                msg.role,
+                msg.content,
+                {
+                    model: msg.model,
+                    temperature: msg.temperature,
+                    maxTokens: msg.maxTokens,
+                    promptTokens: msg.promptTokens,
+                    completionTokens: msg.completionTokens,
+                    totalTokens: msg.totalTokens,
+                    estimatedCost: msg.estimatedCost,
+                }
+            );
+        }
+
+        console.log('[JsonDatabase] Imported conversation with', data.messages.length, 'messages');
+        return newConversation;
+    }
+
+    // Statistics methods
+    async getUsageStatistics(): Promise<UsageStatistics> {
+        console.log('[JsonDatabase] Calculating usage statistics');
+
+        const conversations = Object.values(this.data.conversations);
+        const messages = Object.values(this.data.messages);
+
+        const stats: UsageStatistics = {
+            totalConversations: conversations.length,
+            totalMessages: messages.length,
+            totalTokens: conversations.reduce((sum, conv) => sum + conv.totalTokens, 0),
+            totalCost: conversations.reduce((sum, conv) => sum + conv.estimatedCost, 0),
+            messagesByProvider: {},
+            tokensByProvider: {},
+            costByProvider: {}
+        };
+
+        // Calculate provider statistics
+        for (const msg of messages) {
+            if (msg.model) {
+                const provider = this.getProviderFromModel(msg.model);
+
+                // Messages by provider
+                stats.messagesByProvider[provider] = (stats.messagesByProvider[provider] || 0) + 1;
+
+                // Tokens by provider
+                if (msg.tokenCount) {
+                    stats.tokensByProvider[provider] = (stats.tokensByProvider[provider] || 0) + msg.tokenCount;
+                }
+
+                // Cost by provider
+                if (msg.cost) {
+                    stats.costByProvider[provider] = (stats.costByProvider[provider] || 0) + msg.cost;
+                }
+            }
+        }
+
+        console.log('[JsonDatabase] Statistics calculated:', stats);
+        return stats;
+    }
+
+    private getProviderFromModel(model: string): string {
+        if (model.includes('claude')) return 'claude';
+        if (model.includes('gpt')) return 'openai';
+        if (model.includes('llama') || model.includes('mistral')) return 'ollama';
+        return 'unknown';
+    }
+
+    // Cleanup
+    close(): void {
+        console.log('[JsonDatabase] Closing database');
+        this.removeAllListeners();
     }
 }
