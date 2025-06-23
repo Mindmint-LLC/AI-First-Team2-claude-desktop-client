@@ -1,209 +1,208 @@
-import React, { useRef, useCallback, useEffect } from 'react';
+/**
+ * File: src/renderer/components/ConversationSidebar.tsx
+ * Module: Conversation Sidebar Component (View)
+ * Purpose: Display list of conversations with search, create, and management options
+ * Usage: Main sidebar for conversation navigation
+ * Contains: ConversationList, SearchBar, NewConversationButton
+ * Dependencies: MobX stores, Radix UI components
+ * Iteration: 1
+ */
+
+import React, { useState, useEffect } from 'react';
 import { observer } from 'mobx-react-lite';
 import { FixedSizeList as List } from 'react-window';
 import { rootStore } from '../stores';
-import { Conversation } from '@shared/types';
-import { formatDistanceToNow } from 'date-fns';
-import { Plus, Search, MessageSquare, Trash2, Edit2 } from 'lucide-react';
-import clsx from 'clsx';
-
-interface ConversationItemProps {
-    conversation: Conversation;
-    isActive: boolean;
-    onSelect: () => void;
-    onRename: () => void;
-    onDelete: () => void;
-}
-
-const ConversationItem = observer(({
-                                       conversation,
-                                       isActive,
-                                       onSelect,
-                                       onRename,
-                                       onDelete
-                                   }: ConversationItemProps) => {
-    const [showActions, setShowActions] = React.useState(false);
-
-    return (
-        <div
-            className={clsx('conversation-item', { active: isActive })}
-            onClick={onSelect}
-            onMouseEnter={() => setShowActions(true)}
-            onMouseLeave={() => setShowActions(false)}
-        >
-            <div className="conversation-item-content">
-                <div className="conversation-icon">
-                    <MessageSquare size={18} />
-                </div>
-
-                <div className="conversation-info">
-                    <div className="conversation-title">{conversation.title}</div>
-                    <div className="conversation-meta">
-            <span className="conversation-time">
-              {formatDistanceToNow(conversation.updatedAt, { addSuffix: true })}
-            </span>
-                        {conversation.totalTokens > 0 && (
-                            <>
-                                <span className="meta-separator">•</span>
-                                <span className="conversation-tokens">
-                  {conversation.totalTokens.toLocaleString()} tokens
-                </span>
-                            </>
-                        )}
-                    </div>
-                </div>
-
-                {showActions && (
-                    <div className="conversation-actions">
-                        <button
-                            className="action-btn"
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onRename();
-                            }}
-                            title="Rename"
-                        >
-                            <Edit2 size={14} />
-                        </button>
-                        <button
-                            className="action-btn action-btn-danger"
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onDelete();
-                            }}
-                            title="Delete"
-                        >
-                            <Trash2 size={14} />
-                        </button>
-                    </div>
-                )}
-            </div>
-        </div>
-    );
-});
+import { Conversation } from '../../shared/types';
+import {
+    Plus,
+    Search,
+    MoreHorizontal,
+    MessageSquare,
+    Calendar,
+    DollarSign,
+} from 'lucide-react';
 
 export const ConversationSidebar = observer(() => {
     const { conversationStore, uiStore } = rootStore;
-    const listRef = useRef<List>(null);
-    const loadMoreRef = useRef<HTMLDivElement>(null);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [filteredConversations, setFilteredConversations] = useState<Conversation[]>([]);
 
-    // Virtual scrolling row renderer
-    const Row = useCallback(({ index, style }: { index: number; style: React.CSSProperties }) => {
-        const conversation = conversationStore.conversationList[index];
-        if (!conversation) return null;
-
-        return (
-            <div style={style}>
-                <ConversationItem
-                    conversation={conversation}
-                    isActive={conversation.id === conversationStore.activeConversationId}
-                    onSelect={() => conversationStore.selectConversation(conversation.id)}
-                    onRename={() => uiStore.showRenameDialog(conversation.id)}
-                    onDelete={() => {
-                        if (confirm('Are you sure you want to delete this conversation?')) {
-                            conversationStore.deleteConversation(conversation.id);
-                        }
-                    }}
-                />
-            </div>
-        );
-    }, [conversationStore.conversationList, conversationStore.activeConversationId]);
-
-    // Infinite scroll observer
     useEffect(() => {
-        const observer = new IntersectionObserver(
-            (entries) => {
-                if (entries[0].isIntersecting && conversationStore.hasMore && !conversationStore.isLoading) {
-                    conversationStore.loadMoreConversations();
-                }
-            },
-            { threshold: 0.1 }
+        conversationStore.loadConversations();
+    }, []);
+
+    useEffect(() => {
+        const filtered = conversationStore.conversations.filter(conv =>
+            conv.title.toLowerCase().includes(searchQuery.toLowerCase())
         );
+        setFilteredConversations(filtered);
+    }, [searchQuery, conversationStore.conversations]);
 
-        if (loadMoreRef.current) {
-            observer.observe(loadMoreRef.current);
+    const handleCreateConversation = async () => {
+        try {
+            await conversationStore.createConversation();
+        } catch (error) {
+            uiStore.showToast('Failed to create conversation', 'error');
         }
-
-        return () => observer.disconnect();
-    }, [conversationStore.hasMore, conversationStore.isLoading]);
-
-    const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
-        conversationStore.setSearchQuery(e.target.value);
     };
 
-    const handleNewConversation = () => {
-        conversationStore.createConversation();
+    const handleDeleteConversation = async (id: string) => {
+        try {
+            await conversationStore.deleteConversation(id);
+            uiStore.showToast('Conversation deleted', 'success');
+        } catch (error) {
+            uiStore.showToast('Failed to delete conversation', 'error');
+        }
+    };
+
+
+
+    const formatDate = (date: Date) => {
+        const now = new Date();
+        const diffInMs = now.getTime() - date.getTime();
+        const diffInDays = Math.floor(diffInMs / (1000 * 60 * 60 * 24));
+
+        if (diffInDays === 0) {
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } else if (diffInDays === 1) {
+            return 'Yesterday';
+        } else if (diffInDays < 7) {
+            return `${diffInDays} days ago`;
+        } else {
+            return date.toLocaleDateString();
+        }
+    };
+
+    const formatCost = (cost: number) => {
+        if (cost === 0) return 'Free';
+        return `$${cost.toFixed(4)}`;
+    };
+
+    const ConversationItem = ({ index, style }: { index: number; style: React.CSSProperties }) => {
+        const conversation = filteredConversations[index];
+        const isActive = conversationStore.activeConversation?.id === conversation.id;
+
+        return (
+            <div style={style} className="conversation-item-wrapper">
+                <div
+                    className={`conversation-item ${isActive ? 'active' : ''}`}
+                    onClick={() => conversationStore.setActiveConversation(conversation.id)}
+                >
+                    <div className="conversation-content">
+                        <div className="conversation-header">
+                            <h3 className="conversation-title">{conversation.title}</h3>
+                            <button
+                                className="conversation-menu-trigger"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    // For now, just show a simple delete option
+                                    if (window.confirm('Delete this conversation?')) {
+                                        handleDeleteConversation(conversation.id);
+                                    }
+                                }}
+                                title="Delete conversation"
+                            >
+                                <MoreHorizontal size={16} />
+                            </button>
+                        </div>
+
+                        <div className="conversation-meta">
+                            <div className="conversation-stat">
+                                <MessageSquare size={12} />
+                                <span>{conversation.messageIds.length} messages</span>
+                            </div>
+                            <div className="conversation-stat">
+                                <Calendar size={12} />
+                                <span>{formatDate(conversation.updatedAt)}</span>
+                            </div>
+                            <div className="conversation-stat">
+                                <DollarSign size={12} />
+                                <span>{formatCost(conversation.estimatedCost)}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
     };
 
     return (
         <div className="conversation-sidebar">
             <div className="sidebar-header">
-                <h1 className="sidebar-title">Conversations</h1>
                 <button
-                    className="btn btn-icon btn-primary"
-                    onClick={handleNewConversation}
-                    title="New Conversation"
+                    className="btn btn-primary new-conversation-btn"
+                    onClick={handleCreateConversation}
+                    disabled={conversationStore.isLoading}
                 >
-                    <Plus size={20} />
+                    <Plus size={16} />
+                    New Chat
                 </button>
             </div>
 
-            <div className="sidebar-search">
-                <Search className="search-icon" size={18} />
-                <input
-                    type="text"
-                    className="search-input"
-                    placeholder="Search conversations..."
-                    value={conversationStore.searchQuery}
-                    onChange={handleSearch}
-                />
+            <div className="search-container">
+                <div className="search-input-wrapper">
+                    <Search size={16} className="search-icon" />
+                    <input
+                        type="text"
+                        placeholder="Search conversations..."
+                        className="search-input"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                </div>
             </div>
 
-            <div className="conversation-list">
-                {conversationStore.conversationList.length > 0 ? (
-                    <>
-                        <List
-                            ref={listRef}
-                            height={window.innerHeight - 140} // Adjust based on header/search height
-                            itemCount={conversationStore.conversationList.length}
-                            itemSize={72}
-                            width="100%"
-                        >
-                            {Row}
-                        </List>
-
-                        {conversationStore.hasMore && (
-                            <div ref={loadMoreRef} className="load-more">
-                                {conversationStore.isLoading && (
-                                    <div className="loading-spinner">Loading...</div>
-                                )}
-                            </div>
-                        )}
-                    </>
-                ) : (
+            <div className="conversations-container">
+                {conversationStore.isLoading ? (
+                    <div className="loading-container">
+                        <div className="loading-spinner" />
+                        <span>Loading conversations...</span>
+                    </div>
+                ) : filteredConversations.length === 0 ? (
                     <div className="empty-conversations">
-                        {conversationStore.searchQuery ? (
-                            <p>No conversations found</p>
+                        {searchQuery ? (
+                            <>
+                                <Search size={48} />
+                                <h3>No conversations found</h3>
+                                <p>Try a different search term</p>
+                            </>
                         ) : (
                             <>
-                                <p>No conversations yet</p>
-                                <button
-                                    className="btn btn-primary btn-sm"
-                                    onClick={handleNewConversation}
-                                >
-                                    Create your first conversation
-                                </button>
+                                <MessageSquare size={48} />
+                                <h3>No conversations yet</h3>
+                                <p>Create your first conversation to get started</p>
                             </>
                         )}
                     </div>
+                ) : (
+                    <List
+                        height={600}
+                        width="100%"
+                        itemCount={filteredConversations.length}
+                        itemSize={120}
+                        itemData={filteredConversations}
+                    >
+                        {ConversationItem}
+                    </List>
                 )}
             </div>
 
             <div className="sidebar-footer">
                 <div className="stats-summary">
-                    <div className="stat-item">
-                        <span className="stat-label">Total:</span>
-                        <span className="stat-value">{conversationStore.totalConversations}</span>
+                    <div className="stat">
+                        <span className="stat-label">Total Conversations:</span>
+                        <span className="stat-value">{conversationStore.conversations.length}</span>
+                    </div>
+                    <div className="stat">
+                        <span className="stat-label">Total Cost:</span>
+                        <span className="stat-value">
+                            {formatCost(
+                                conversationStore.conversations.reduce(
+                                    (sum, conv) => sum + conv.estimatedCost,
+                                    0
+                                )
+                            )}
+                        </span>
                     </div>
                 </div>
             </div>

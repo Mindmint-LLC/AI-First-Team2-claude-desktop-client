@@ -1,13 +1,3 @@
-/**
- * File: vite.config.ts
- * Module: Build Configuration
- * Purpose: Configure Vite for Electron renderer process
- * Usage: Build configuration for React app
- * Contains: Vite configuration for production builds
- * Dependencies: vite, @vitejs/plugin-react
- * Iteration: 2
- */
-
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -40,6 +30,7 @@ export default defineConfig({
                 entryFileNames: 'assets/[name]-[hash].js',
             },
         },
+        target: 'esnext',
     },
     server: {
         // This is only used during development with vite dev server
@@ -53,5 +44,8 @@ export default defineConfig({
     // They should be handled by Electron's node integration
     optimizeDeps: {
         exclude: ['electron'],
+    },
+    esbuild: {
+        target: 'esnext',
     },
 });

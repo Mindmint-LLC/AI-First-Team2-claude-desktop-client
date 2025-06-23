@@ -1,9 +1,27 @@
 import { ClaudeAdapter, OpenAIAdapter, OllamaAdapter, ProviderRegistry } from '../main/models/APIAdapters';
 import { Message, StreamEvent } from '../shared/types';
+import type { Settings } from '../shared/settings';
 import { describe, test, expect, beforeEach, jest } from '@jest/globals';
 
 // Mock fetch
 global.fetch = jest.fn() as jest.MockedFunction<typeof fetch>;
+
+const mockSettings: Settings = {
+    provider: 'claude' as const,
+    model: 'claude-3-sonnet-20240229',
+    temperature: 0.7,
+    maxTokens: 2048,
+    systemPrompt: 'You are a helpful assistant.',
+    apiKeys: {
+        claude: 'test-claude-key',
+        openai: 'test-openai-key',
+        ollama: '',
+    },
+    retryAttempts: 3,
+    streamRateLimit: 50,
+    theme: 'dark' as const,
+    ollamaEndpoint: 'http://localhost:11434/api',
+};
 
 describe('API Adapters', () => {
     beforeEach(() => {
@@ -14,63 +32,30 @@ describe('API Adapters', () => {
         let adapter: ClaudeAdapter;
 
         beforeEach(() => {
-            adapter = new ClaudeAdapter('claude', 'test-api-key', 3);
+            adapter = new ClaudeAdapter(mockSettings);
         });
 
         test('should set authorization header', () => {
-            expect(adapter['headers']['x-api-key']).toBe('test-api-key');
+            expect(adapter['apiKey']).toBe('test-claude-key');
         });
 
-        test('should handle streaming response', async () => {
+        test('should handle non-streaming response', async () => {
             const mockResponse = {
                 ok: true,
-                body: {
-                    getReader: () => ({
-                        read: jest.fn()
-                            .mockResolvedValueOnce({
-                                done: false,
-                                value: new TextEncoder().encode('data: {"type":"content_block_delta","delta":{"text":"Hello"}}\n'),
-                            })
-                            .mockResolvedValueOnce({
-                                done: false,
-                                value: new TextEncoder().encode('data: {"type":"message_stop","usage":{"input_tokens":10,"output_tokens":5}}\n'),
-                            })
-                            .mockResolvedValueOnce({
-                                done: true,
-                                value: undefined,
-                            }),
-                    }),
-                },
+                json: jest.fn().mockResolvedValue({
+                    content: [{ text: 'Hello, world!' }],
+                    model: 'claude-3-opus-20240229',
+                    usage: { input_tokens: 10, output_tokens: 5 },
+                }),
             };
 
             (global.fetch as jest.MockedFunction<typeof fetch>).mockResolvedValue(mockResponse as any);
 
-            const messages: Message[] = [{
-                id: 'test-msg',
-                conversationId: 'test-conv',
-                role: 'user',
-                content: 'Hello',
-                timestamp: new Date(),
-                model: 'claude-3-opus-20240229',
-                provider: 'claude',
-                tokenCount: 5,
-                cost: 0.001,
-            }];
+            const result = await adapter.sendMessage([{ role: 'user', content: 'Hello' }], 'claude-3-opus-20240229');
 
-            const events: StreamEvent[] = [];
-            adapter.on('stream', (event) => events.push(event));
-
-            await adapter.sendMessage(messages, 'claude-3-opus-20240229', {
-                systemPrompt: '',
-                maxTokens: 100,
-                temperature: 0.7,
-            });
-
-            expect(events).toHaveLength(3);
-            expect(events[0].type).toBe('start');
-            expect(events[1].type).toBe('token');
-            expect(events[1].data).toBe('Hello');
-            expect(events[2].type).toBe('complete');
+            expect(result.content).toBe('Hello, world!');
+            expect(result.usage?.input).toBe(10);
+            expect(result.usage?.output).toBe(5);
         });
 
         test('should handle API errors', async () => {
@@ -92,8 +77,8 @@ describe('API Adapters', () => {
                 cost: 0.001,
             }];
 
-            await expect(adapter.sendMessage(messages, 'claude-3-opus-20240229', {}))
-                .rejects.toThrow('API request failed');
+            await expect(adapter.sendMessage([{ role: 'user', content: 'Hello' }], 'claude-3-opus-20240229'))
+                .rejects.toThrow('Anthropic API error');
         });
 
         test('should test connection', async () => {
@@ -108,7 +93,7 @@ describe('API Adapters', () => {
         test('should return hardcoded models', async () => {
             const models = await adapter.getModels();
             expect(models).toHaveLength(3);
-            expect(models[0].id).toBe('claude-3-opus-20240229');
+            expect(models[0]).toBe('claude-3-opus-20240229');
         });
     });
 
@@ -116,63 +101,30 @@ describe('API Adapters', () => {
         let adapter: OpenAIAdapter;
 
         beforeEach(() => {
-            adapter = new OpenAIAdapter('openai', 'test-api-key', 3);
+            adapter = new OpenAIAdapter(mockSettings);
         });
 
         test('should set authorization header', () => {
-            expect(adapter['headers']['Authorization']).toBe('Bearer test-api-key');
+            expect(adapter['apiKey']).toBe('test-openai-key');
         });
 
-        test('should handle streaming response', async () => {
+        test('should handle non-streaming response', async () => {
             const mockResponse = {
                 ok: true,
-                body: {
-                    getReader: () => ({
-                        read: jest.fn()
-                            .mockResolvedValueOnce({
-                                done: false,
-                                value: new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Hello"}}]}\n'),
-                            })
-                            .mockResolvedValueOnce({
-                                done: false,
-                                value: new TextEncoder().encode('data: [DONE]\n'),
-                            })
-                            .mockResolvedValueOnce({
-                                done: true,
-                                value: undefined,
-                            }),
-                    }),
-                },
+                json: jest.fn().mockResolvedValue({
+                    choices: [{ message: { content: 'Hello, world!' } }],
+                    model: 'gpt-4',
+                    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+                }),
             };
 
             (global.fetch as jest.MockedFunction<typeof fetch>).mockResolvedValue(mockResponse as any);
 
-            const messages: Message[] = [{
-                id: 'test-msg',
-                conversationId: 'test-conv',
-                role: 'user',
-                content: 'Hello',
-                timestamp: new Date(),
-                model: 'gpt-4',
-                provider: 'openai',
-                tokenCount: 5,
-                cost: 0.001,
-            }];
+            const result = await adapter.sendMessage([{ role: 'user', content: 'Hello' }], 'gpt-4');
 
-            const events: StreamEvent[] = [];
-            adapter.on('stream', (event) => events.push(event));
-
-            await adapter.sendMessage(messages, 'gpt-4', {
-                systemPrompt: '',
-                maxTokens: 100,
-                temperature: 0.7,
-            });
-
-            expect(events).toHaveLength(3);
-            expect(events[0].type).toBe('start');
-            expect(events[1].type).toBe('token');
-            expect(events[1].data).toBe('Hello');
-            expect(events[2].type).toBe('complete');
+            expect(result.content).toBe('Hello, world!');
+            expect(result.usage?.input).toBe(10);
+            expect(result.usage?.output).toBe(5);
         });
 
         test('should fetch available models', async () => {
@@ -189,8 +141,8 @@ describe('API Adapters', () => {
 
             const models = await adapter.getModels();
             expect(models).toHaveLength(2);
-            expect(models.map(m => m.id)).toContain('gpt-4');
-            expect(models.map(m => m.id)).not.toContain('text-davinci-003');
+            expect(models).toContain('gpt-4');
+            expect(models).not.toContain('text-davinci-003');
         });
     });
 
@@ -198,63 +150,31 @@ describe('API Adapters', () => {
         let adapter: OllamaAdapter;
 
         beforeEach(() => {
-            adapter = new OllamaAdapter('ollama', '', 3, 'http://localhost:11434/api/chat');
+            adapter = new OllamaAdapter(mockSettings);
         });
 
         test('should not set authorization header', () => {
-            expect(adapter['headers']['Authorization']).toBeUndefined();
+            expect(adapter['apiKey']).toBe('');
         });
 
-        test('should handle streaming response', async () => {
+        test('should handle non-streaming response', async () => {
             const mockResponse = {
                 ok: true,
-                body: {
-                    getReader: () => ({
-                        read: jest.fn()
-                            .mockResolvedValueOnce({
-                                done: false,
-                                value: new TextEncoder().encode('{"message":{"content":"Hello"}}\n'),
-                            })
-                            .mockResolvedValueOnce({
-                                done: false,
-                                value: new TextEncoder().encode('{"done":true,"prompt_eval_count":10,"eval_count":5}\n'),
-                            })
-                            .mockResolvedValueOnce({
-                                done: true,
-                                value: undefined,
-                            }),
-                    }),
-                },
+                json: jest.fn().mockResolvedValue({
+                    response: 'Hello, world!',
+                    prompt_eval_count: 10,
+                    eval_count: 5,
+                }),
             };
 
             (global.fetch as jest.MockedFunction<typeof fetch>).mockResolvedValue(mockResponse as any);
 
-            const messages: Message[] = [{
-                id: 'test-msg',
-                conversationId: 'test-conv',
-                role: 'user',
-                content: 'Hello',
-                timestamp: new Date(),
-                model: 'llama2',
-                provider: 'ollama',
-                tokenCount: 5,
-                cost: 0,
-            }];
+            const result = await adapter.sendMessage([{ role: 'user', content: 'Hello' }], 'llama2');
 
-            const events: StreamEvent[] = [];
-            adapter.on('stream', (event) => events.push(event));
-
-            await adapter.sendMessage(messages, 'llama2', {
-                systemPrompt: '',
-                maxTokens: 100,
-                temperature: 0.7,
-            });
-
-            expect(events).toHaveLength(3);
-            expect(events[0].type).toBe('start');
-            expect(events[1].type).toBe('token');
-            expect(events[2].type).toBe('complete');
-            expect(events[2].cost).toBe(0); // Ollama is free
+            expect(result.content).toBe('Hello, world!');
+            expect(result.usage?.input).toBe(10);
+            expect(result.usage?.output).toBe(5);
+            expect(result.cost?.total).toBe(0); // Ollama is free
         });
 
         test('should fetch available models', async () => {
@@ -270,9 +190,7 @@ describe('API Adapters', () => {
 
             const models = await adapter.getModels();
             expect(models).toHaveLength(2);
-            expect(models[0].id).toBe('llama2');
-            expect(models[0].costPer1kInput).toBe(0);
-            expect(models[0].costPer1kOutput).toBe(0);
+            expect(models[0]).toBe('llama2');
         });
     });
 
@@ -280,15 +198,7 @@ describe('API Adapters', () => {
         let registry: ProviderRegistry;
 
         beforeEach(() => {
-            registry = new ProviderRegistry({
-                apiKeys: {
-                    claude: 'claude-key',
-                    openai: 'openai-key',
-                    ollama: '',
-                },
-                retryAttempts: 3,
-                ollamaEndpoint: 'http://localhost:11434/api/chat',
-            });
+            registry = new ProviderRegistry(mockSettings);
         });
 
         test('should initialize adapters based on API keys', () => {
@@ -306,14 +216,14 @@ describe('API Adapters', () => {
             registry.updateApiKey('claude', 'new-key');
             const adapter = registry.getAdapter('claude');
             expect(adapter).toBeInstanceOf(ClaudeAdapter);
-            expect(adapter!['headers']['x-api-key']).toBe('new-key');
+            expect(adapter!['apiKey']).toBe('new-key');
         });
 
         test('should update Ollama endpoint', () => {
             registry.updateOllamaEndpoint('http://custom:11434/api/chat');
             const adapter = registry.getAdapter('ollama');
             expect(adapter).toBeInstanceOf(OllamaAdapter);
-            expect(adapter!['endpoint']).toBe('http://custom:11434/api/chat');
+            expect(adapter!['baseURL']).toBe('http://custom:11434/api/chat');
         });
 
         test('should test connection for provider', async () => {

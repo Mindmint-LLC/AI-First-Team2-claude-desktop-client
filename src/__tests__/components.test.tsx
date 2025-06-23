@@ -8,6 +8,25 @@ import { rootStore } from '../renderer/stores';
 import { Conversation, Message } from '../shared/types';
 import '@testing-library/jest-dom';
 
+// Mock react-markdown and related ES modules
+jest.mock('react-markdown', () => {
+    return function ReactMarkdown({ children }: { children: string }) {
+        return React.createElement('div', { 'data-testid': 'markdown-content' }, children);
+    };
+});
+
+jest.mock('remark-gfm', () => () => {});
+
+jest.mock('react-syntax-highlighter', () => ({
+    Prism: function SyntaxHighlighter({ children }: { children: string }) {
+        return React.createElement('pre', { 'data-testid': 'syntax-highlighter' }, children);
+    }
+}));
+
+jest.mock('react-syntax-highlighter/dist/esm/styles/prism', () => ({
+    vscDarkPlus: {}
+}));
+
 // Mock electron API
 global.electronAPI = {
     invoke: jest.fn(),

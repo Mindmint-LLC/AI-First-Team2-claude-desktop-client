@@ -5,10 +5,10 @@
  * Usage: Import in both preload and renderer for consistent types
  * Contains: ElectronAPI interface definition
  * Dependencies: IPCChannels from constants
- * Iteration: 1
+ * Iteration: 2
  */
 
-import { IPCChannels } from './constants';
+import { IPCChannels } from './channels';
 
 export interface ElectronAPI {
     invoke: <T = any, R = any>(channel: string, data: T) => Promise<R>;

@@ -2,51 +2,11 @@
  * File: src/shared/constants.ts
  * Module: Shared Constants
  * Purpose: Define constants used across main and renderer processes
- * Usage: Import for IPC channels, limits, and configuration values
- * Contains: IPC channel names, app constants, API endpoints
+ * Usage: Import for app constants, error codes, and configuration values
+ * Contains: App constants, API endpoints, error codes
  * Dependencies: none
- * Iteration: 1
+ * Iteration: 5
  */
-
-// IPC Channel definitions
-export const IPCChannels = {
-    // Conversation channels
-    CREATE_CONVERSATION: 'conversation:create',
-    GET_CONVERSATIONS: 'conversation:list',
-    GET_CONVERSATION: 'conversation:get',
-    UPDATE_CONVERSATION: 'conversation:update',
-    DELETE_CONVERSATION: 'conversation:delete',
-    SEARCH_CONVERSATIONS: 'conversation:search',
-
-    // Message channels
-    ADD_MESSAGE: 'message:add',
-    GET_MESSAGES: 'message:list',
-    DELETE_MESSAGE: 'message:delete',
-    SEND_MESSAGE: 'message:send',
-    STOP_GENERATION: 'message:stop',
-
-    // Stream channels
-    STREAM_START: 'stream:start',
-    STREAM_TOKEN: 'stream:token',
-    STREAM_END: 'stream:end',
-    STREAM_ERROR: 'stream:error',
-
-    // Settings channels
-    GET_SETTINGS: 'settings:get',
-    UPDATE_SETTINGS: 'settings:update',
-    SET_API_KEY: 'settings:set-api-key',
-
-    // API channels
-    TEST_CONNECTION: 'api:test',
-    GET_MODELS: 'api:models',
-
-    // Export/Import channels
-    EXPORT_CONVERSATION: 'export:conversation',
-    IMPORT_CONVERSATION: 'import:conversation',
-
-    // Stats channels
-    GET_STATS: 'stats:get',
-} as const;
 
 // Application constants
 export const APP_CONSTANTS = {
@@ -70,6 +30,14 @@ export const APP_CONSTANTS = {
     // Storage
     SETTINGS_KEY: 'app-settings',
     DATABASE_VERSION: 1,
+
+    // Validation
+    MIN_MESSAGE_LENGTH: 1,
+    MAX_MESSAGE_LENGTH: 100000,
+    MIN_TITLE_LENGTH: 1,
+    MAX_TITLE_LENGTH: 200,
+    MIN_SYSTEM_PROMPT_LENGTH: 0,
+    MAX_SYSTEM_PROMPT_LENGTH: 10000,
 } as const;
 
 // Provider endpoints
@@ -146,7 +114,55 @@ export const KEYBOARD_SHORTCUTS = {
     STOP_GENERATION: 'Escape',
 } as const;
 
+// Theme constants
+export const THEME_COLORS = {
+    DARK: {
+        PRIMARY: '#3b82f6',
+        SECONDARY: '#6b7280',
+        SUCCESS: '#10b981',
+        WARNING: '#f59e0b',
+        ERROR: '#ef4444',
+        INFO: '#06b6d4',
+        BACKGROUND: '#1a1a1a',
+        SURFACE: '#2d2d2d',
+        TEXT: '#ffffff',
+        TEXT_MUTED: '#9ca3af',
+    },
+} as const;
+
+// File size limits
+export const FILE_LIMITS = {
+    MAX_FILE_SIZE: 10 * 1024 * 1024, // 10MB
+    MAX_FILES_PER_UPLOAD: 5,
+    SUPPORTED_IMAGE_TYPES: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+    SUPPORTED_DOCUMENT_TYPES: ['text/plain', 'text/markdown', 'application/json'],
+} as const;
+
+// API rate limits
+export const RATE_LIMITS = {
+    CLAUDE: {
+        REQUESTS_PER_MINUTE: 60,
+        TOKENS_PER_MINUTE: 100000,
+    },
+    OPENAI: {
+        REQUESTS_PER_MINUTE: 60,
+        TOKENS_PER_MINUTE: 90000,
+    },
+    OLLAMA: {
+        REQUESTS_PER_MINUTE: 1000, // Local, so higher limit
+        TOKENS_PER_MINUTE: 1000000,
+    },
+} as const;
+
 // Type exports
-export type IPCChannelType = typeof IPCChannels[keyof typeof IPCChannels];
 export type ErrorCodeType = typeof ERROR_CODES[keyof typeof ERROR_CODES];
-export type ProviderType = 'CLAUDE' | 'OPENAI' | 'OLLAMA';
+export type ProviderType = 'claude' | 'openai' | 'ollama';
+
+// Validation functions
+export const isValidProvider = (provider: string): provider is ProviderType => {
+    return ['claude', 'openai', 'ollama'].includes(provider);
+};
+
+export const isValidErrorCode = (code: string): code is ErrorCodeType => {
+    return Object.values(ERROR_CODES).includes(code as ErrorCodeType);
+};

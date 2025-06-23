@@ -4,11 +4,18 @@
  * Purpose: Define TypeScript types used across main and renderer processes
  * Usage: Import for type safety in both processes
  * Contains: Data models, IPC types, API types
- * Dependencies: zod (for schema validation)
- * Iteration: 1
+ * Dependencies: none
+ * Iteration: 10
  */
 
-import { z } from 'zod';
+// Re-export from other files for compatibility
+export { IPCChannels } from './channels';
+export { DEFAULT_SETTINGS } from './settings';
+export type { Settings, Provider } from './settings';
+export { SettingsSchema } from './schemas';
+
+// Re-export Provider type for local use
+import type { Provider } from './settings';
 
 // Base data types
 export interface Conversation {
@@ -20,6 +27,16 @@ export interface Conversation {
     totalTokens: number;
     estimatedCost: number;
     metadata?: Record<string, unknown>;
+}
+
+export interface ConversationMetadata {
+    id: string;
+    title: string;
+    createdAt: number;
+    updatedAt: number;
+    messageCount: number;
+    totalTokens: number;
+    totalCost: number;
 }
 
 export interface Message {
@@ -37,20 +54,16 @@ export interface Message {
     error?: string;
 }
 
-export interface Settings {
-    provider: Provider;
-    model: string;
-    temperature: number;
-    maxTokens: number;
-    systemPrompt: string;
-    apiKeys: Record<Provider, string>;
-    retryAttempts: number;
-    streamRateLimit: number;
-    theme: 'dark';
-    ollamaEndpoint?: string;
+export interface Usage {
+    input: number;
+    output: number;
+    total: number;
+    cost?: {
+        input: number;
+        output: number;
+        total: number;
+    };
 }
-
-export type Provider = 'claude' | 'openai' | 'ollama';
 
 export interface ModelInfo {
     id: string;
@@ -64,6 +77,18 @@ export interface ProviderConfig {
     models: ModelInfo[];
     endpoint: string;
     headers: Record<string, string>;
+}
+
+export interface UsageStats {
+    totalConversations: number;
+    totalMessages: number;
+    totalTokens: number;
+    totalCost: number;
+    messagesThisMonth: number;
+    costThisMonth: number;
+    averageTokensPerMessage: number;
+    mostUsedModel: string;
+    mostUsedProvider: Provider;
 }
 
 // IPC Types
@@ -97,7 +122,7 @@ export interface StreamEvent {
 export interface APIResponse {
     content: string;
     model: string;
-    tokenCount: {
+    usage: {
         input: number;
         output: number;
         total: number;
@@ -110,118 +135,60 @@ export interface APIResponse {
 }
 
 // Database types
-export interface DatabaseError extends Error {
-    code: string;
-    query?: string;
-}
+export type UpdateType = 'created' | 'updated' | 'deleted';
 
-export interface UsageStats {
-    totalConversations: number;
-    totalMessages: number;
-    totalTokens: number;
-    totalCost: number;
-    byProvider: Record<Provider, {
-        messages: number;
-        tokens: number;
-        cost: number;
-    }>;
-    byModel: Record<string, {
-        messages: number;
-        tokens: number;
-        cost: number;
-    }>;
-}
-
-// Export/Import types
-export interface ExportedConversation {
-    version: string;
-    exportedAt: Date;
-    conversation: Conversation;
-    messages: Message[];
-}
-
-// Zod Schemas for validation
-export const ConversationSchema = z.object({
-    id: z.string(),
-    title: z.string(),
-    createdAt: z.date(),
-    updatedAt: z.date(),
-    messageIds: z.array(z.string()),
-    totalTokens: z.number(),
-    estimatedCost: z.number(),
-    metadata: z.record(z.unknown()).optional(),
-});
-
-export const MessageSchema = z.object({
-    id: z.string(),
-    conversationId: z.string(),
-    role: z.enum(['user', 'assistant', 'system']),
-    content: z.string(),
-    timestamp: z.date(),
-    model: z.string(),
-    provider: z.enum(['claude', 'openai', 'ollama']),
-    tokenCount: z.number(),
-    cost: z.number(),
-    metadata: z.record(z.unknown()).optional(),
-    streaming: z.boolean().optional(),
-    error: z.string().optional(),
-});
-
-export const SettingsSchema = z.object({
-    provider: z.enum(['claude', 'openai', 'ollama']),
-    model: z.string(),
-    temperature: z.number().min(0).max(2),
-    maxTokens: z.number().positive(),
-    systemPrompt: z.string(),
-    apiKeys: z.record(z.enum(['claude', 'openai', 'ollama']), z.string()),
-    retryAttempts: z.number().min(0).max(5),
-    streamRateLimit: z.number().min(10).max(1000),
-    theme: z.literal('dark'),
-    ollamaEndpoint: z.string().url().optional(),
-});
-
-// Type guards
-export function isConversation(obj: unknown): obj is Conversation {
-    try {
-        ConversationSchema.parse(obj);
-        return true;
-    } catch {
-        return false;
+// Error types
+export class AppError extends Error {
+    constructor(
+        message: string,
+        public code: string,
+        public details?: Record<string, unknown>
+    ) {
+        super(message);
+        this.name = 'AppError';
     }
 }
 
-export function isMessage(obj: unknown): obj is Message {
-    try {
-        MessageSchema.parse(obj);
-        return true;
-    } catch {
-        return false;
+export class APIError extends AppError {
+    constructor(
+        message: string,
+        public statusCode: number,
+        public provider: Provider,
+        details?: Record<string, unknown>
+    ) {
+        super(message, 'API_ERROR', { statusCode, provider, ...details });
+        this.name = 'APIError';
     }
 }
 
-export function isSettings(obj: unknown): obj is Settings {
-    try {
-        SettingsSchema.parse(obj);
-        return true;
-    } catch {
-        return false;
+export class DatabaseError extends AppError {
+    public dbCode?: string;
+    public query?: string;
+    public params?: unknown[];
+
+    constructor(
+        message: string,
+        public operation: string,
+        public originalError?: Error,
+        dbCode?: string,
+        query?: string,
+        params?: unknown[]
+    ) {
+        super(message, 'DATABASE_ERROR', { operation, originalError: originalError?.message, dbCode, query, params });
+        this.name = 'DatabaseError';
+        this.dbCode = dbCode;
+        this.query = query;
+        this.params = params;
     }
 }
 
-// Default values
-export const DEFAULT_SETTINGS: Settings = {
-    provider: 'claude',
-    model: 'claude-3-opus-20240229',
-    temperature: 0.7,
-    maxTokens: 2048,
-    systemPrompt: 'You are a helpful AI assistant.',
-    apiKeys: {
-        claude: '',
-        openai: '',
-        ollama: '',
-    },
-    retryAttempts: 3,
-    streamRateLimit: 50,
-    theme: 'dark',
-    ollamaEndpoint: 'http://localhost:11434/api',
-};
+export class ValidationError extends AppError {
+    constructor(
+        message: string,
+        public field: string,
+        public value: unknown
+    ) {
+        super(message, 'VALIDATION_ERROR', { field, value });
+        this.name = 'ValidationError';
+    }
+}

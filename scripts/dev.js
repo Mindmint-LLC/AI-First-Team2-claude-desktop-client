@@ -5,7 +5,7 @@
  * Usage: Called by npm run dev
  * Contains: Build check and dev server coordination
  * Dependencies: child_process, fs
- * Iteration: 1
+ * Iteration: 2
  */
 
 const { spawn } = require('child_process');
@@ -28,22 +28,22 @@ async function startDev() {
     console.log('🔧 Starting development processes...\n');
 
     // Start TypeScript compiler for main process
-    const mainProcess = spawn('npm', ['run', 'dev:main'], {
+    const mainProcess = spawn('npx', ['tsc', '-w', '-p', 'tsconfig.main.json'], {
         stdio: 'inherit',
         shell: true
     });
 
-    // Start Vite in watch mode for renderer
-    const rendererProcess = spawn('npm', ['run', 'dev:renderer:watch'], {
+    // Start Vite dev server for renderer
+    const rendererProcess = spawn('npx', ['vite', '--port', '3000'], {
         stdio: 'inherit',
         shell: true
     });
 
-    // Wait a bit for initial builds
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Wait a bit for initial builds and dev server startup
+    await new Promise(resolve => setTimeout(resolve, 8000));
 
     // Start Electron
-    const electronProcess = spawn('electron', ['.'], {
+    const electronProcess = spawn('npx', ['electron', '.'], {
         stdio: 'inherit',
         shell: true,
         env: { ...process.env, NODE_ENV: 'development' }

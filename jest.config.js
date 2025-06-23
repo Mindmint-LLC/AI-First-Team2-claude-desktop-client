@@ -21,6 +21,9 @@ module.exports = {
         '\\.(css|less|scss|sass)$': 'identity-obj-proxy',
     },
     setupFilesAfterEnv: ['<rootDir>/src/__tests__/setup.ts'],
+    transformIgnorePatterns: [
+        'node_modules/(?!(@?react-markdown|@?remark-.*|@?rehype-.*|@?unified|@?micromark.*|@?unist-.*|@?mdast-.*|@?hast-.*|property-information|space-separated-tokens|comma-separated-tokens|character-entities|decode-named-character-reference|bail|is-plain-obj|trough|vfile|vfile-message|zwitch|devlop|longest-streak|markdown-table|ccount|escape-string-regexp)/)'
+    ],
     collectCoverageFrom: [
         'src/**/*.{ts,tsx}',
         '!src/**/*.d.ts',

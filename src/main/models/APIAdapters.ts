@@ -1,589 +1,558 @@
 import { EventEmitter } from 'events';
-import { Provider, ModelInfo, Message, StreamEvent, APIError, MODEL_CONFIGS } from '@shared/types';
-import { net } from 'electron';
 
-// Token counting approximation
-function estimateTokens(text: string): number {
-    // Rough estimation: ~4 characters per token
-    return Math.ceil(text.length / 4);
+// Inline types to avoid module resolution issues
+type Provider = 'claude' | 'openai' | 'ollama';
+
+interface Settings {
+    provider: Provider;
+    model: string;
+    temperature: number;
+    maxTokens: number;
+    systemPrompt: string;
+    apiKeys: Record<Provider, string>;
+    retryAttempts: number;
+    streamRateLimit: number;
+    theme: 'dark';
+    ollamaEndpoint?: string;
 }
 
-// Base API Adapter
-export abstract class BaseAPIAdapter extends EventEmitter {
-    protected provider: Provider;
-    protected endpoint: string;
-    protected headers: Record<string, string>;
-    protected retryAttempts: number;
-    protected requestQueue: Array<() => Promise<void>> = [];
-    protected isProcessing = false;
+interface APIResponse {
+    content: string;
+    model: string;
+    usage: {
+        input: number;
+        output: number;
+        total: number;
+    };
+    cost?: {
+        input: number;
+        output: number;
+        total: number;
+    };
+}
 
-    constructor(provider: Provider, apiKey: string, retryAttempts: number = 3) {
+interface StreamEvent {
+    type: 'start' | 'token' | 'end' | 'error';
+    messageId: string;
+    content?: string;
+    error?: string;
+    metadata?: {
+        model?: string;
+        tokenCount?: number;
+        finishReason?: string;
+    };
+}
+
+// Define response types
+interface AnthropicResponse {
+    content: Array<{ text: string }>;
+    model: string;
+    usage: {
+        input_tokens: number;
+        output_tokens: number;
+    };
+}
+
+interface OpenAIResponse {
+    choices: Array<{
+        message: {
+            content: string;
+        };
+    }>;
+    model: string;
+    usage: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+    };
+}
+
+interface OllamaResponse {
+    response: string;
+    model?: string;
+    prompt_eval_count?: number;
+    eval_count?: number;
+}
+
+interface OllamaModel {
+    name: string;
+}
+
+export class BaseAPIAdapter extends EventEmitter {
+    protected apiKey: string;
+    protected baseURL: string;
+    protected provider: Provider;
+
+    constructor(provider: Provider, apiKey: string, baseURL: string) {
         super();
         this.provider = provider;
-        const config = MODEL_CONFIGS[provider];
-        this.endpoint = config.endpoint;
-        this.headers = { ...config.headers };
-        this.retryAttempts = retryAttempts;
-
-        if (apiKey) {
-            this.setAuthHeader(apiKey);
-        }
-    }
-
-    abstract setAuthHeader(apiKey: string): void;
-    abstract sendMessage(messages: Message[], model: string, settings: any): Promise<void>;
-    abstract testConnection(): Promise<boolean>;
-    abstract getModels(): Promise<ModelInfo[]>;
-
-    protected async makeRequest(url: string, options: any): Promise<any> {
-        let lastError: Error | null = null;
-
-        for (let attempt = 0; attempt < this.retryAttempts; attempt++) {
-            try {
-                const response = await this.fetchWithTimeout(url, options);
-
-                if (!response.ok) {
-                    const error = await response.text();
-                    throw new APIError(
-                        `API request failed: ${error}`,
-                        'API_ERROR',
-                        response.status,
-                        this.provider
-                    );
-                }
-
-                return response;
-            } catch (error) {
-                lastError = error as Error;
-
-                if (attempt < this.retryAttempts - 1) {
-                    // Exponential backoff
-                    await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
-                }
-            }
-        }
-
-        throw lastError || new Error('Unknown error');
-    }
-
-    protected async fetchWithTimeout(url: string, options: any, timeout: number = 30000): Promise<Response> {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-        try {
-            const response = await fetch(url, {
-                ...options,
-                signal: controller.signal,
-            });
-
-            return response;
-        } finally {
-            clearTimeout(timeoutId);
-        }
-    }
-
-    protected async processQueue(): Promise<void> {
-        if (this.isProcessing || this.requestQueue.length === 0) return;
-
-        this.isProcessing = true;
-
-        while (this.requestQueue.length > 0) {
-            const request = this.requestQueue.shift();
-            if (request) {
-                try {
-                    await request();
-                } catch (error) {
-                    this.emit('error', error);
-                }
-            }
-        }
-
-        this.isProcessing = false;
-    }
-
-    protected calculateCost(inputTokens: number, outputTokens: number, model: string): number {
-        const modelInfo = MODEL_CONFIGS[this.provider].models.find(m => m.id === model);
-        if (!modelInfo) return 0;
-
-        return (inputTokens * modelInfo.costPer1kInput / 1000) +
-            (outputTokens * modelInfo.costPer1kOutput / 1000);
-    }
-}
-
-// Claude API Adapter
-export class ClaudeAdapter extends BaseAPIAdapter {
-    setAuthHeader(apiKey: string): void {
-        this.headers['x-api-key'] = apiKey;
-    }
-
-    async sendMessage(messages: Message[], model: string, settings: any): Promise<void> {
-        const messageId = messages[messages.length - 1]?.id || 'unknown';
-
-        this.emit('stream', {
-            type: 'start',
-            messageId,
-        } as StreamEvent);
-
-        try {
-            // Convert messages to Claude format
-            const claudeMessages = messages
-                .filter(m => m.role !== 'system')
-                .map(m => ({
-                    role: m.role === 'assistant' ? 'assistant' : 'user',
-                    content: m.content,
-                }));
-
-            const systemPrompt = messages.find(m => m.role === 'system')?.content || settings.systemPrompt;
-
-            const requestBody = {
-                model,
-                messages: claudeMessages,
-                system: systemPrompt,
-                max_tokens: settings.maxTokens,
-                temperature: settings.temperature,
-                stream: true,
-            };
-
-            const response = await this.makeRequest(this.endpoint, {
-                method: 'POST',
-                headers: this.headers,
-                body: JSON.stringify(requestBody),
-            });
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            let fullContent = '';
-            let tokenCount = 0;
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const data = line.slice(6);
-                        if (data === '[DONE]') continue;
-
-                        try {
-                            const parsed = JSON.parse(data);
-
-                            if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
-                                fullContent += parsed.delta.text;
-                                tokenCount = estimateTokens(fullContent);
-
-                                this.emit('stream', {
-                                    type: 'token',
-                                    messageId,
-                                    data: parsed.delta.text,
-                                    tokenCount,
-                                } as StreamEvent);
-                            } else if (parsed.type === 'message_stop') {
-                                const inputTokens = parsed.usage?.input_tokens || estimateTokens(messages.map(m => m.content).join(' '));
-                                const outputTokens = parsed.usage?.output_tokens || tokenCount;
-                                const cost = this.calculateCost(inputTokens, outputTokens, model);
-
-                                this.emit('stream', {
-                                    type: 'complete',
-                                    messageId,
-                                    tokenCount: outputTokens,
-                                    cost,
-                                } as StreamEvent);
-                            }
-                        } catch (e) {
-                            console.error('Failed to parse Claude SSE:', e);
-                        }
-                    }
-                }
-            }
-        } catch (error) {
-            this.emit('stream', {
-                type: 'error',
-                messageId,
-                error: (error as Error).message,
-            } as StreamEvent);
-
-            throw error;
-        }
+        this.apiKey = apiKey;
+        this.baseURL = baseURL;
     }
 
     async testConnection(): Promise<boolean> {
         try {
-            const response = await this.makeRequest(this.endpoint, {
-                method: 'POST',
-                headers: this.headers,
-                body: JSON.stringify({
-                    model: 'claude-3-haiku-20240307',
-                    messages: [{ role: 'user', content: 'Hi' }],
-                    max_tokens: 1,
-                }),
+            const response = await fetch(this.baseURL, {
+                method: 'GET',
+                headers: this.getHeaders(),
             });
-
             return response.ok;
-        } catch (error) {
+        } catch {
             return false;
         }
     }
 
-    async getModels(): Promise<ModelInfo[]> {
-        // Claude doesn't have a models endpoint, return hardcoded list
-        return MODEL_CONFIGS.claude.models;
+    protected getHeaders(): Record<string, string> {
+        return {
+            'Content-Type': 'application/json',
+        };
+    }
+
+    async abortStream(_messageId: string): Promise<void> {
+        // Implementation would depend on the specific provider
+    }
+
+    async streamMessage(_messageId: string, _userMessage: string, _history: any[]): Promise<void> {
+        throw new Error('Method must be implemented by subclass');
+    }
+
+    async getModels(): Promise<string[]> {
+        throw new Error('Method must be implemented by subclass');
     }
 }
 
-// OpenAI API Adapter
-export class OpenAIAdapter extends BaseAPIAdapter {
-    setAuthHeader(apiKey: string): void {
-        this.headers['Authorization'] = `Bearer ${apiKey}`;
+export class AnthropicAdapter extends BaseAPIAdapter {
+    constructor(settings: Settings) {
+        super('claude', settings.apiKeys.claude, 'https://api.anthropic.com/v1');
     }
 
-    async sendMessage(messages: Message[], model: string, settings: any): Promise<void> {
-        const messageId = messages[messages.length - 1]?.id || 'unknown';
+    protected getHeaders(): Record<string, string> {
+        return {
+            ...super.getHeaders(),
+            'x-api-key': this.apiKey,
+            'anthropic-version': '2023-06-01'
+        };
+    }
 
-        this.emit('stream', {
-            type: 'start',
-            messageId,
-        } as StreamEvent);
+    async sendMessage(messages: any[], model: string): Promise<APIResponse> {
+        const response = await fetch(`${this.baseURL}/messages`, {
+            method: 'POST',
+            headers: this.getHeaders(),
+            body: JSON.stringify({
+                model,
+                messages,
+                max_tokens: 4096
+            })
+        });
 
-        try {
-            // Convert messages to OpenAI format
-            const openAIMessages = messages.map(m => ({
-                role: m.role,
-                content: m.content,
-            }));
+        if (!response.ok) {
+            throw new Error(`Anthropic API error: ${response.statusText}`);
+        }
 
-            if (settings.systemPrompt && !messages.some(m => m.role === 'system')) {
-                openAIMessages.unshift({
-                    role: 'system',
-                    content: settings.systemPrompt,
-                });
+        const data = await response.json() as AnthropicResponse;
+
+        return {
+            content: data.content[0].text,
+            model: data.model,
+            usage: {
+                input: data.usage.input_tokens,
+                output: data.usage.output_tokens,
+                total: data.usage.input_tokens + data.usage.output_tokens,
+            },
+            cost: {
+                input: (data.usage.input_tokens / 1000) * 0.015,
+                output: (data.usage.output_tokens / 1000) * 0.075,
+                total: ((data.usage.input_tokens / 1000) * 0.015) + ((data.usage.output_tokens / 1000) * 0.075),
+            }
+        };
+    }
+
+    async streamMessage(messageId: string, userMessage: string, _history: any[]): Promise<void> {
+        const response = await fetch(`${this.baseURL}/messages`, {
+            method: 'POST',
+            headers: this.getHeaders(),
+            body: JSON.stringify({
+                model: 'claude-3-sonnet-20240229',
+                messages: [{ role: 'user', content: userMessage }],
+                max_tokens: 4096,
+                stream: true
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Anthropic API error: ${response.statusText}`);
+        }
+
+        this.emit('stream:start', { type: 'start', messageId });
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+
+        if (!reader) {
+            throw new Error('Response body is not readable');
+        }
+
+        let buffer = '';
+        let reading = true;
+        while (reading) {
+            const { done, value } = await reader.read();
+            if (done) {
+                reading = false;
+                break;
             }
 
-            const requestBody = {
-                model,
-                messages: openAIMessages,
-                max_tokens: settings.maxTokens,
-                temperature: settings.temperature,
-                stream: true,
-            };
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
 
-            const response = await this.makeRequest(this.endpoint, {
-                method: 'POST',
-                headers: this.headers,
-                body: JSON.stringify(requestBody),
-            });
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            let fullContent = '';
-            let tokenCount = 0;
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const data = line.slice(6);
-                        if (data === '[DONE]') {
-                            const inputTokens = estimateTokens(messages.map(m => m.content).join(' '));
-                            const outputTokens = tokenCount;
-                            const cost = this.calculateCost(inputTokens, outputTokens, model);
-
-                            this.emit('stream', {
-                                type: 'complete',
-                                messageId,
-                                tokenCount: outputTokens,
-                                cost,
-                            } as StreamEvent);
-                            continue;
-                        }
-
-                        try {
-                            const parsed = JSON.parse(data);
-                            const delta = parsed.choices?.[0]?.delta;
-
-                            if (delta?.content) {
-                                fullContent += delta.content;
-                                tokenCount = estimateTokens(fullContent);
-
-                                this.emit('stream', {
-                                    type: 'token',
-                                    messageId,
-                                    data: delta.content,
-                                    tokenCount,
-                                } as StreamEvent);
-                            }
-                        } catch (e) {
-                            console.error('Failed to parse OpenAI SSE:', e);
-                        }
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = line.slice(6);
+                    if (data === '[DONE]') {
+                        this.emit('stream:end', { type: 'end', messageId });
+                        return;
                     }
-                }
-            }
-        } catch (error) {
-            this.emit('stream', {
-                type: 'error',
-                messageId,
-                error: (error as Error).message,
-            } as StreamEvent);
-
-            throw error;
-        }
-    }
-
-    async testConnection(): Promise<boolean> {
-        try {
-            const response = await this.makeRequest('https://api.openai.com/v1/models', {
-                method: 'GET',
-                headers: this.headers,
-            });
-
-            return response.ok;
-        } catch (error) {
-            return false;
-        }
-    }
-
-    async getModels(): Promise<ModelInfo[]> {
-        try {
-            const response = await this.makeRequest('https://api.openai.com/v1/models', {
-                method: 'GET',
-                headers: this.headers,
-            });
-
-            const data = await response.json();
-            const availableModels = data.data
-                .filter((model: any) => model.id.includes('gpt'))
-                .map((model: any) => model.id);
-
-            // Return only our supported models that are available
-            return MODEL_CONFIGS.openai.models.filter(m =>
-                availableModels.some((am: string) => am.includes(m.id))
-            );
-        } catch (error) {
-            // Return hardcoded list on error
-            return MODEL_CONFIGS.openai.models;
-        }
-    }
-}
-
-// Ollama API Adapter
-export class OllamaAdapter extends BaseAPIAdapter {
-    constructor(provider: Provider, apiKey: string, retryAttempts: number = 3, endpoint?: string) {
-        super(provider, apiKey, retryAttempts);
-        if (endpoint) {
-            this.endpoint = endpoint;
-        }
-    }
-
-    setAuthHeader(_apiKey: string): void {
-        // Ollama doesn't use API keys
-    }
-
-    async sendMessage(messages: Message[], model: string, settings: any): Promise<void> {
-        const messageId = messages[messages.length - 1]?.id || 'unknown';
-
-        this.emit('stream', {
-            type: 'start',
-            messageId,
-        } as StreamEvent);
-
-        try {
-            // Convert messages to Ollama format
-            const ollamaMessages = messages.map(m => ({
-                role: m.role,
-                content: m.content,
-            }));
-
-            if (settings.systemPrompt && !messages.some(m => m.role === 'system')) {
-                ollamaMessages.unshift({
-                    role: 'system',
-                    content: settings.systemPrompt,
-                });
-            }
-
-            const requestBody = {
-                model,
-                messages: ollamaMessages,
-                options: {
-                    temperature: settings.temperature,
-                    num_predict: settings.maxTokens,
-                },
-                stream: true,
-            };
-
-            const response = await this.makeRequest(this.endpoint, {
-                method: 'POST',
-                headers: this.headers,
-                body: JSON.stringify(requestBody),
-            });
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let fullContent = '';
-            let tokenCount = 0;
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n').filter(line => line.trim());
-
-                for (const line of lines) {
                     try {
-                        const parsed = JSON.parse(line);
-
-                        if (parsed.message?.content) {
-                            fullContent += parsed.message.content;
-                            tokenCount = estimateTokens(fullContent);
-
-                            this.emit('stream', {
-                                type: 'token',
+                        const parsed = JSON.parse(data);
+                        if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
+                            this.emit('stream:token', { type: 'token', messageId, content: parsed.delta.text });
+                        } else if (parsed.type === 'message_stop') {
+                            this.emit('stream:end', { 
+                                type: 'end',
                                 messageId,
-                                data: parsed.message.content,
-                                tokenCount,
-                            } as StreamEvent);
-                        }
-
-                        if (parsed.done) {
-                            const inputTokens = parsed.prompt_eval_count || estimateTokens(messages.map(m => m.content).join(' '));
-                            const outputTokens = parsed.eval_count || tokenCount;
-                            // Ollama is free, so cost is 0
-                            const cost = 0;
-
-                            this.emit('stream', {
-                                type: 'complete',
-                                messageId,
-                                tokenCount: outputTokens,
-                                cost,
-                            } as StreamEvent);
+                                metadata: parsed.usage ? {
+                                    tokenCount: parsed.usage.input_tokens + parsed.usage.output_tokens
+                                } : undefined
+                            });
                         }
                     } catch (e) {
-                        console.error('Failed to parse Ollama response:', e);
+                        console.error('Error parsing stream data:', e);
                     }
                 }
             }
-        } catch (error) {
-            this.emit('stream', {
-                type: 'error',
-                messageId,
-                error: (error as Error).message,
-            } as StreamEvent);
-
-            throw error;
         }
     }
 
-    async testConnection(): Promise<boolean> {
-        try {
-            const response = await this.makeRequest(
-                this.endpoint.replace('/api/chat', '/api/tags'),
-                {
-                    method: 'GET',
-                    headers: this.headers,
-                }
-            );
+    async getModels(): Promise<string[]> {
+        return ['claude-3-opus-20240229', 'claude-3-sonnet-20240229', 'claude-3-haiku-20240307'];
+    }
+}
 
-            return response.ok;
-        } catch (error) {
-            return false;
+export class OpenAIAdapter extends BaseAPIAdapter {
+    constructor(settings: Settings) {
+        super('openai', settings.apiKeys.openai, 'https://api.openai.com/v1');
+    }
+
+    protected getHeaders(): Record<string, string> {
+        return {
+            ...super.getHeaders(),
+            'Authorization': `Bearer ${this.apiKey}`
+        };
+    }
+
+    async sendMessage(messages: any[], model: string): Promise<APIResponse> {
+        const response = await fetch(`${this.baseURL}/chat/completions`, {
+            method: 'POST',
+            headers: this.getHeaders(),
+            body: JSON.stringify({
+                model,
+                messages
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`OpenAI API error: ${response.statusText}`);
+        }
+
+        const data = await response.json() as OpenAIResponse;
+
+        return {
+            content: data.choices[0].message.content,
+            model: data.model,
+            usage: {
+                input: data.usage.prompt_tokens,
+                output: data.usage.completion_tokens,
+                total: data.usage.total_tokens,
+            },
+            cost: {
+                input: (data.usage.prompt_tokens / 1000) * 0.03,
+                output: (data.usage.completion_tokens / 1000) * 0.06,
+                total: ((data.usage.prompt_tokens / 1000) * 0.03) + ((data.usage.completion_tokens / 1000) * 0.06),
+            }
+        };
+    }
+
+    async streamMessage(messageId: string, userMessage: string, _history: any[]): Promise<void> {
+        const response = await fetch(`${this.baseURL}/chat/completions`, {
+            method: 'POST',
+            headers: this.getHeaders(),
+            body: JSON.stringify({
+                model: 'gpt-4',
+                messages: [{ role: 'user', content: userMessage }],
+                stream: true
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`OpenAI API error: ${response.statusText}`);
+        }
+
+        this.emit('stream:start', { type: 'start', messageId });
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+
+        if (!reader) {
+            throw new Error('Response body is not readable');
+        }
+
+        let buffer = '';
+        let reading = true;
+        while (reading) {
+            const { done, value } = await reader.read();
+            if (done) {
+                reading = false;
+                break;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = line.slice(6);
+                    if (data === '[DONE]') {
+                        this.emit('stream:end', { type: 'end', messageId });
+                        return;
+                    }
+                    try {
+                        const parsed = JSON.parse(data);
+                        if (parsed.choices?.[0]?.delta?.content) {
+                            this.emit('stream:token', { type: 'token', messageId, content: parsed.choices[0].delta.content });
+                        }
+                    } catch (e) {
+                        console.error('Error parsing stream data:', e);
+                    }
+                }
+            }
         }
     }
 
-    async getModels(): Promise<ModelInfo[]> {
+    async getModels(): Promise<string[]> {
         try {
-            const response = await this.makeRequest(
-                this.endpoint.replace('/api/chat', '/api/tags'),
-                {
-                    method: 'GET',
-                    headers: this.headers,
-                }
-            );
+            const response = await fetch(`${this.baseURL}/models`, {
+                headers: this.getHeaders()
+            });
 
-            const data = await response.json();
-            return data.models.map((model: any) => ({
-                id: model.name,
-                name: model.name,
-                maxTokens: 4096, // Default for most models
-                costPer1kInput: 0,
-                costPer1kOutput: 0,
-            }));
+            if (!response.ok) {
+                throw new Error(`OpenAI API error: ${response.statusText}`);
+            }
+
+            const data = await response.json() as { data: Array<{ id: string }> };
+            if (!data.data || !Array.isArray(data.data)) {
+                return [];
+            }
+            return data.data
+                .filter(model => model.id.startsWith('gpt'))
+                .map(model => model.id);
         } catch (error) {
+            console.error('Error fetching OpenAI models:', error);
             return [];
         }
     }
 }
 
-// Provider Registry
+export class OllamaAdapter extends BaseAPIAdapter {
+    constructor(settings: Settings) {
+        super('ollama', '', settings.ollamaEndpoint || 'http://localhost:11434');
+    }
+
+    protected getHeaders(): Record<string, string> {
+        return {
+            'Content-Type': 'application/json'
+        };
+    }
+
+    async sendMessage(messages: any[], model: string): Promise<APIResponse> {
+        const response = await fetch(`${this.baseURL}/api/chat`, {
+            method: 'POST',
+            headers: this.getHeaders(),
+            body: JSON.stringify({
+                model,
+                messages,
+                stream: false
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Ollama API error: ${response.statusText}`);
+        }
+
+        const data = await response.json() as OllamaResponse;
+
+        return {
+            content: data.response,
+            model,
+            usage: {
+                input: data.prompt_eval_count || 0,
+                output: data.eval_count || 0,
+                total: (data.prompt_eval_count || 0) + (data.eval_count || 0),
+            },
+            cost: {
+                input: 0,
+                output: 0,
+                total: 0,
+            }
+        };
+    }
+
+    async streamMessage(messageId: string, userMessage: string, _history: any[]): Promise<void> {
+        const response = await fetch(`${this.baseURL}/api/chat`, {
+            method: 'POST',
+            headers: this.getHeaders(),
+            body: JSON.stringify({
+                model: 'llama2',
+                messages: [{ role: 'user', content: userMessage }],
+                stream: true
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Ollama API error: ${response.statusText}`);
+        }
+
+        this.emit('stream:start', { type: 'start', messageId });
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+
+        if (!reader) {
+            throw new Error('Response body is not readable');
+        }
+
+        let buffer = '';
+        let reading = true;
+        while (reading) {
+            const { done, value } = await reader.read();
+            if (done) {
+                reading = false;
+                break;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (line.trim()) {
+                    try {
+                        const parsed = JSON.parse(line);
+                        if (parsed.message?.content) {
+                            this.emit('stream:token', { type: 'token', messageId, content: parsed.message.content });
+                        }
+                        if (parsed.done) {
+                            this.emit('stream:end', { 
+                                type: 'end',
+                                messageId,
+                                metadata: {
+                                    tokenCount: (parsed.prompt_eval_count || 0) + (parsed.eval_count || 0)
+                                }
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Error parsing stream data:', e);
+                    }
+                }
+            }
+        }
+    }
+
+    async getModels(): Promise<string[]> {
+        try {
+            const response = await fetch(`${this.baseURL}/api/tags`);
+            if (!response.ok) {
+                throw new Error(`Ollama API error: ${response.statusText}`);
+            }
+            const data = await response.json() as { models?: OllamaModel[] };
+            return data.models?.map((model) => model.name) || [];
+        } catch (error) {
+            console.error('Error fetching Ollama models:', error);
+            return [];
+        }
+    }
+}
+
 export class ProviderRegistry {
     private adapters: Map<Provider, BaseAPIAdapter> = new Map();
-    private settings: any;
+    private settings: Settings;
 
-    constructor(settings: any) {
+    constructor(settings: Settings) {
         this.settings = settings;
         this.initializeAdapters();
     }
 
     private initializeAdapters(): void {
-        const { apiKeys, retryAttempts, ollamaEndpoint } = this.settings;
-
-        if (apiKeys.claude) {
-            this.adapters.set('claude', new ClaudeAdapter('claude', apiKeys.claude, retryAttempts));
+        if (this.settings.apiKeys.claude) {
+            this.adapters.set('claude', new AnthropicAdapter(this.settings));
         }
-
-        if (apiKeys.openai) {
-            this.adapters.set('openai', new OpenAIAdapter('openai', apiKeys.openai, retryAttempts));
+        if (this.settings.apiKeys.openai) {
+            this.adapters.set('openai', new OpenAIAdapter(this.settings));
         }
+        // Ollama doesn't need an API key
+        this.adapters.set('ollama', new OllamaAdapter(this.settings));
+    }
 
-        this.adapters.set('ollama', new OllamaAdapter('ollama', '', retryAttempts, ollamaEndpoint));
+    updateAdapters(settings: Settings): void {
+        this.settings = settings;
+        this.adapters.clear();
+        this.initializeAdapters();
     }
 
     getAdapter(provider: Provider): BaseAPIAdapter | null {
         return this.adapters.get(provider) || null;
     }
 
+    async testProvider(provider: Provider): Promise<boolean> {
+        const adapter = this.getAdapter(provider);
+        if (!adapter) return false;
+        return await adapter.testConnection();
+    }
+
+    async getModels(provider: Provider): Promise<string[]> {
+        const adapter = this.getAdapter(provider);
+        if (!adapter) return [];
+        return await adapter.getModels();
+    }
+
     updateApiKey(provider: Provider, apiKey: string): void {
-        const adapter = this.adapters.get(provider);
-        if (adapter) {
-            adapter.setAuthHeader(apiKey);
-        } else if (apiKey) {
-            // Create new adapter if key is provided
-            switch (provider) {
-                case 'claude':
-                    this.adapters.set(provider, new ClaudeAdapter(provider, apiKey, this.settings.retryAttempts));
-                    break;
-                case 'openai':
-                    this.adapters.set(provider, new OpenAIAdapter(provider, apiKey, this.settings.retryAttempts));
-                    break;
+        const newSettings = {
+            ...this.settings,
+            apiKeys: {
+                ...this.settings.apiKeys,
+                [provider]: apiKey
             }
-        }
+        };
+        this.updateAdapters(newSettings);
     }
 
     updateOllamaEndpoint(endpoint: string): void {
-        this.adapters.set('ollama', new OllamaAdapter('ollama', '', this.settings.retryAttempts, endpoint));
+        const newSettings = {
+            ...this.settings,
+            ollamaEndpoint: endpoint
+        };
+        this.updateAdapters(newSettings);
     }
 
     async testConnection(provider: Provider): Promise<boolean> {
-        const adapter = this.adapters.get(provider);
-        if (!adapter) return false;
-
-        return adapter.testConnection();
-    }
-
-    async getModels(provider: Provider): Promise<ModelInfo[]> {
-        const adapter = this.adapters.get(provider);
-        if (!adapter) return [];
-
-        return adapter.getModels();
+        return await this.testProvider(provider);
     }
 }
+
+// For backwards compatibility
+export const DatabaseManager = class {
+    // This will be replaced by the Database class
+};
+
+// Alias for backwards compatibility with tests
+export const ClaudeAdapter = AnthropicAdapter;

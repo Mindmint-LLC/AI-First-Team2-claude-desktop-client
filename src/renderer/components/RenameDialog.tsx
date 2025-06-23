@@ -9,7 +9,7 @@ export const RenameDialog = observer(() => {
     const [title, setTitle] = useState('');
 
     const conversation = uiStore.renameConversationId
-        ? conversationStore.conversations.get(uiStore.renameConversationId)
+        ? conversationStore.conversations.find(c => c.id === uiStore.renameConversationId)
         : null;
 
     useEffect(() => {
@@ -23,7 +23,7 @@ export const RenameDialog = observer(() => {
 
         if (!conversation || !title.trim()) return;
 
-        await conversationStore.renameConversation(conversation.id, title.trim());
+        await conversationStore.updateConversation(conversation.id, { title: title.trim() });
         uiStore.hideRenameDialog();
     };
 

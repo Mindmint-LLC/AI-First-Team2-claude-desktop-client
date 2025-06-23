@@ -1,3 +1,13 @@
+/**
+ * File: src/renderer/components/SettingsDialog.tsx
+ * Module: Settings Dialog Component (View)
+ * Purpose: Modal dialog for configuring application settings
+ * Usage: Popup form for API keys, model selection, and preferences
+ * Contains: SettingsDialog with provider/model configuration
+ * Dependencies: Radix UI Dialog, MobX stores
+ * Iteration: 2
+ */
+
 import React, { useState, useEffect } from 'react';
 import { observer } from 'mobx-react-lite';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -6,7 +16,20 @@ import * as Slider from '@radix-ui/react-slider';
 import * as Separator from '@radix-ui/react-separator';
 import { rootStore } from '../stores';
 import { Provider, Settings } from '@shared/types';
-import { X, ChevronDown, Eye, EyeOff, TestTube, BarChart3 } from 'lucide-react';
+import { 
+    X, 
+    ChevronDown, 
+    Eye, 
+    EyeOff, 
+    TestTube, 
+    BarChart3, 
+    Check,
+    ChevronUp,
+    Settings as SettingsIcon,
+    Key,
+    Brain,
+    Sliders,
+} from 'lucide-react';
 
 export const SettingsDialog = observer(() => {
     const { settingsStore, uiStore } = rootStore;
@@ -17,6 +40,11 @@ export const SettingsDialog = observer(() => {
         ollama: false,
     });
     const [isTesting, setIsTesting] = useState<Provider | null>(null);
+    const [testResults, setTestResults] = useState<Record<Provider, boolean | null>>({
+        claude: null,
+        openai: null,
+        ollama: null,
+    });
 
     useEffect(() => {
         if (settingsStore.settings) {
@@ -69,73 +97,135 @@ export const SettingsDialog = observer(() => {
 
     const handleTestConnection = async (provider: Provider) => {
         setIsTesting(provider);
-
-        // Save current settings first
-        if (localSettings) {
-            await settingsStore.updateSettings(localSettings);
-        }
-
-        // Test connection
-        await settingsStore.testConnection(provider);
-
+        const success = await settingsStore.testConnection(provider);
+        
+        setTestResults(prev => ({
+            ...prev,
+            [provider]: success,
+        }));
+        
         setIsTesting(null);
+        
+        if (success) {
+            uiStore.showToast(`${provider} connection successful`, 'success');
+        } else {
+            uiStore.showToast(`${provider} connection failed`, 'error');
+        }
     };
 
     const handleSave = async () => {
         if (!localSettings) return;
 
         await settingsStore.updateSettings(localSettings);
-        uiStore.hideSettings();
+        uiStore.closeSettings();
     };
 
-    const handleShowStats = () => {
-        uiStore.loadUsageStats();
+    const handleCancel = () => {
+        // Reset local settings
+        if (settingsStore.settings) {
+            setLocalSettings({ ...settingsStore.settings });
+        }
+        uiStore.closeSettings();
     };
 
-    if (!localSettings) return null;
+    const toggleApiKeyVisibility = (provider: Provider) => {
+        setShowApiKeys(prev => ({
+            ...prev,
+            [provider]: !prev[provider],
+        }));
+    };
 
-    const currentModels = settingsStore.availableModels.get(localSettings.provider) || [];
+    const getProviderDisplayName = (provider: Provider) => {
+        switch (provider) {
+            case 'claude':
+                return 'Anthropic Claude';
+            case 'openai':
+                return 'OpenAI';
+            case 'ollama':
+                return 'Ollama (Local)';
+            default:
+                return provider;
+        }
+    };
+
+    const getModelDisplayName = (model: string) => {
+        const modelNames: Record<string, string> = {
+            'claude-3-opus-20240229': 'Claude 3 Opus',
+            'claude-3-sonnet-20240229': 'Claude 3 Sonnet',
+            'claude-3-haiku-20240307': 'Claude 3 Haiku',
+            'claude-2.1': 'Claude 2.1',
+            'claude-2.0': 'Claude 2.0',
+            'gpt-4-turbo-preview': 'GPT-4 Turbo',
+            'gpt-4': 'GPT-4',
+            'gpt-3.5-turbo': 'GPT-3.5 Turbo',
+            'llama2': 'Llama 2',
+            'mistral': 'Mistral',
+            'codellama': 'Code Llama',
+        };
+        return modelNames[model] || model;
+    };
+
+    if (!localSettings) {
+        return null;
+    }
+
+    const availableModels = settingsStore.availableModels.get(localSettings.provider) || [];
 
     return (
-        <Dialog.Root open={uiStore.isSettingsOpen} onOpenChange={(open) => !open && uiStore.hideSettings()}>
+        <Dialog.Root open={uiStore.isSettingsOpen} onOpenChange={uiStore.closeSettings}>
             <Dialog.Portal>
                 <Dialog.Overlay className="dialog-overlay" />
                 <Dialog.Content className="dialog-content settings-dialog">
-                    <Dialog.Title className="dialog-title">Settings</Dialog.Title>
-
-                    <button
-                        className="dialog-close"
-                        onClick={() => uiStore.hideSettings()}
-                    >
-                        <X size={20} />
-                    </button>
+                    <div className="dialog-header">
+                        <div className="dialog-title-section">
+                            <SettingsIcon size={20} />
+                            <Dialog.Title className="dialog-title">
+                                Settings
+                            </Dialog.Title>
+                        </div>
+                        <Dialog.Close className="dialog-close">
+                            <X size={20} />
+                        </Dialog.Close>
+                    </div>
 
                     <div className="settings-content">
-                        {/* Provider Selection */}
+                        {/* Provider Section */}
                         <div className="settings-section">
-                            <h3 className="section-title">AI Provider</h3>
+                            <h3 className="section-title">
+                                <Brain size={16} />
+                                AI Provider
+                            </h3>
 
                             <div className="form-group">
                                 <label htmlFor="provider">Provider</label>
-                                <Select.Root value={localSettings.provider} onValueChange={handleProviderChange}>
-                                    <Select.Trigger className="select-trigger" id="provider">
+                                <Select.Root
+                                    value={localSettings.provider}
+                                    onValueChange={(value) => handleProviderChange(value as Provider)}
+                                >
+                                    <Select.Trigger className="select-trigger">
                                         <Select.Value />
-                                        <Select.Icon>
-                                            <ChevronDown size={16} />
-                                        </Select.Icon>
+                                        <ChevronDown size={16} />
                                     </Select.Trigger>
-
                                     <Select.Portal>
                                         <Select.Content className="select-content">
                                             <Select.Viewport>
                                                 <Select.Item value="claude" className="select-item">
-                                                    <Select.ItemText>Claude (Anthropic)</Select.ItemText>
+                                                    <Select.ItemText>Anthropic Claude</Select.ItemText>
+                                                    <Select.ItemIndicator>
+                                                        <Check size={14} />
+                                                    </Select.ItemIndicator>
                                                 </Select.Item>
                                                 <Select.Item value="openai" className="select-item">
                                                     <Select.ItemText>OpenAI</Select.ItemText>
+                                                    <Select.ItemIndicator>
+                                                        <Check size={14} />
+                                                    </Select.ItemIndicator>
                                                 </Select.Item>
                                                 <Select.Item value="ollama" className="select-item">
                                                     <Select.ItemText>Ollama (Local)</Select.ItemText>
+                                                    <Select.ItemIndicator>
+                                                        <Check size={14} />
+                                                    </Select.ItemIndicator>
                                                 </Select.Item>
                                             </Select.Viewport>
                                         </Select.Content>
@@ -148,21 +238,22 @@ export const SettingsDialog = observer(() => {
                                 <Select.Root
                                     value={localSettings.model}
                                     onValueChange={handleModelChange}
-                                    disabled={currentModels.length === 0}
                                 >
-                                    <Select.Trigger className="select-trigger" id="model">
+                                    <Select.Trigger className="select-trigger">
                                         <Select.Value placeholder="Select a model..." />
-                                        <Select.Icon>
-                                            <ChevronDown size={16} />
-                                        </Select.Icon>
+                                        <ChevronDown size={16} />
                                     </Select.Trigger>
-
                                     <Select.Portal>
                                         <Select.Content className="select-content">
                                             <Select.Viewport>
-                                                {currentModels.map((model) => (
-                                                    <Select.Item key={model.id} value={model.id} className="select-item">
-                                                        <Select.ItemText>{model.name}</Select.ItemText>
+                                                {availableModels.map((model) => (
+                                                    <Select.Item key={model} value={model} className="select-item">
+                                                        <Select.ItemText>
+                                                            {getModelDisplayName(model)}
+                                                        </Select.ItemText>
+                                                        <Select.ItemIndicator>
+                                                            <Check size={14} />
+                                                        </Select.ItemIndicator>
                                                     </Select.Item>
                                                 ))}
                                             </Select.Viewport>
@@ -172,102 +263,81 @@ export const SettingsDialog = observer(() => {
                             </div>
                         </div>
 
-                        <Separator.Root className="separator" />
+                        <Separator.Root className="settings-separator" />
 
-                        {/* API Configuration */}
+                        {/* API Keys Section */}
                         <div className="settings-section">
-                            <h3 className="section-title">API Configuration</h3>
+                            <h3 className="section-title">
+                                <Key size={16} />
+                                API Keys
+                            </h3>
 
-                            {/* Claude API Key */}
-                            {localSettings.provider === 'claude' && (
-                                <div className="form-group">
-                                    <label htmlFor="claude-key">Claude API Key</label>
-                                    <div className="input-with-action">
+                            {(['claude', 'openai', 'ollama'] as Provider[]).map((provider) => (
+                                <div key={provider} className="api-key-group">
+                                    <div className="api-key-header">
+                                        <label htmlFor={`api-key-${provider}`}>
+                                            {getProviderDisplayName(provider)}
+                                        </label>
+                                        <div className="api-key-actions">
+                                            {provider !== 'ollama' && (
+                                                <button
+                                                    type="button"
+                                                    className="btn-icon"
+                                                    onClick={() => handleTestConnection(provider)}
+                                                    disabled={isTesting === provider || !localSettings.apiKeys[provider]}
+                                                    title="Test connection"
+                                                >
+                                                    {isTesting === provider ? (
+                                                        <div className="loading-spinner small" />
+                                                    ) : (
+                                                        <TestTube size={14} />
+                                                    )}
+                                                </button>
+                                            )}
+                                            {testResults[provider] !== null && (
+                                                <div className={`test-result ${testResults[provider] ? 'success' : 'error'}`}>
+                                                    {testResults[provider] ? '✓' : '✗'}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="input-with-toggle">
                                         <input
-                                            id="claude-key"
-                                            type={showApiKeys.claude ? 'text' : 'password'}
+                                            id={`api-key-${provider}`}
+                                            type={showApiKeys[provider] ? 'text' : 'password'}
                                             className="form-input"
-                                            value={localSettings.apiKeys.claude}
-                                            onChange={(e) => handleApiKeyChange('claude', e.target.value)}
-                                            placeholder="sk-ant-..."
+                                            value={localSettings.apiKeys[provider]}
+                                            onChange={(e) => handleApiKeyChange(provider, e.target.value)}
+                                            placeholder={
+                                                provider === 'ollama' 
+                                                    ? 'Not required for local Ollama'
+                                                    : `Enter your ${getProviderDisplayName(provider)} API key...`
+                                            }
+                                            disabled={provider === 'ollama'}
                                         />
-                                        <button
-                                            className="btn btn-icon"
-                                            onClick={() => setShowApiKeys({ ...showApiKeys, claude: !showApiKeys.claude })}
-                                        >
-                                            {showApiKeys.claude ? <EyeOff size={16} /> : <Eye size={16} />}
-                                        </button>
-                                        <button
-                                            className="btn btn-icon"
-                                            onClick={() => handleTestConnection('claude')}
-                                            disabled={!localSettings.apiKeys.claude || isTesting === 'claude'}
-                                        >
-                                            <TestTube size={16} />
-                                        </button>
+                                        {provider !== 'ollama' && (
+                                            <button
+                                                type="button"
+                                                className="toggle-visibility-btn"
+                                                onClick={() => toggleApiKeyVisibility(provider)}
+                                            >
+                                                {showApiKeys[provider] ? <EyeOff size={16} /> : <Eye size={16} />}
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
-                            )}
-
-                            {/* OpenAI API Key */}
-                            {localSettings.provider === 'openai' && (
-                                <div className="form-group">
-                                    <label htmlFor="openai-key">OpenAI API Key</label>
-                                    <div className="input-with-action">
-                                        <input
-                                            id="openai-key"
-                                            type={showApiKeys.openai ? 'text' : 'password'}
-                                            className="form-input"
-                                            value={localSettings.apiKeys.openai}
-                                            onChange={(e) => handleApiKeyChange('openai', e.target.value)}
-                                            placeholder="sk-..."
-                                        />
-                                        <button
-                                            className="btn btn-icon"
-                                            onClick={() => setShowApiKeys({ ...showApiKeys, openai: !showApiKeys.openai })}
-                                        >
-                                            {showApiKeys.openai ? <EyeOff size={16} /> : <Eye size={16} />}
-                                        </button>
-                                        <button
-                                            className="btn btn-icon"
-                                            onClick={() => handleTestConnection('openai')}
-                                            disabled={!localSettings.apiKeys.openai || isTesting === 'openai'}
-                                        >
-                                            <TestTube size={16} />
-                                        </button>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Ollama Endpoint */}
-                            {localSettings.provider === 'ollama' && (
-                                <div className="form-group">
-                                    <label htmlFor="ollama-endpoint">Ollama Endpoint</label>
-                                    <div className="input-with-action">
-                                        <input
-                                            id="ollama-endpoint"
-                                            type="text"
-                                            className="form-input"
-                                            value={localSettings.ollamaEndpoint || 'http://localhost:11434/api/chat'}
-                                            onChange={(e) => setLocalSettings({ ...localSettings, ollamaEndpoint: e.target.value })}
-                                            placeholder="http://localhost:11434/api/chat"
-                                        />
-                                        <button
-                                            className="btn btn-icon"
-                                            onClick={() => handleTestConnection('ollama')}
-                                            disabled={isTesting === 'ollama'}
-                                        >
-                                            <TestTube size={16} />
-                                        </button>
-                                    </div>
-                                </div>
-                            )}
+                            ))}
                         </div>
 
-                        <Separator.Root className="separator" />
+                        <Separator.Root className="settings-separator" />
 
-                        {/* Model Parameters */}
+                        {/* Model Parameters Section */}
                         <div className="settings-section">
-                            <h3 className="section-title">Model Parameters</h3>
+                            <h3 className="section-title">
+                                <Sliders size={16} />
+                                Model Parameters
+                            </h3>
 
                             <div className="form-group">
                                 <label htmlFor="temperature">
@@ -312,17 +382,20 @@ export const SettingsDialog = observer(() => {
                                     className="form-textarea"
                                     value={localSettings.systemPrompt}
                                     onChange={(e) => setLocalSettings({ ...localSettings, systemPrompt: e.target.value })}
-                                    placeholder="You are a helpful AI assistant..."
+                                    placeholder="Enter system prompt..."
                                     rows={4}
                                 />
                             </div>
                         </div>
 
-                        <Separator.Root className="separator" />
+                        <Separator.Root className="settings-separator" />
 
-                        {/* Advanced Settings */}
+                        {/* Advanced Section */}
                         <div className="settings-section">
-                            <h3 className="section-title">Advanced</h3>
+                            <h3 className="section-title">
+                                <BarChart3 size={16} />
+                                Advanced
+                            </h3>
 
                             <div className="form-group">
                                 <label htmlFor="retry-attempts">Retry Attempts</label>
@@ -333,113 +406,55 @@ export const SettingsDialog = observer(() => {
                                     value={localSettings.retryAttempts}
                                     onChange={(e) => setLocalSettings({ ...localSettings, retryAttempts: parseInt(e.target.value) || 0 })}
                                     min={0}
-                                    max={5}
+                                    max={10}
                                 />
                             </div>
 
                             <div className="form-group">
-                                <label htmlFor="stream-rate">
-                                    Stream Rate Limit: {localSettings.streamRateLimit}ms
-                                </label>
-                                <Slider.Root
-                                    className="slider-root"
-                                    value={[localSettings.streamRateLimit]}
-                                    onValueChange={([value]) => setLocalSettings({ ...localSettings, streamRateLimit: value })}
+                                <label htmlFor="stream-rate-limit">Stream Rate Limit (ms)</label>
+                                <input
+                                    id="stream-rate-limit"
+                                    type="number"
+                                    className="form-input"
+                                    value={localSettings.streamRateLimit}
+                                    onChange={(e) => setLocalSettings({ ...localSettings, streamRateLimit: parseInt(e.target.value) || 0 })}
                                     min={10}
-                                    max={100}
-                                    step={5}
-                                >
-                                    <Slider.Track className="slider-track">
-                                        <Slider.Range className="slider-range" />
-                                    </Slider.Track>
-                                    <Slider.Thumb className="slider-thumb" />
-                                </Slider.Root>
-                                <div className="slider-labels">
-                                    <span>Fast</span>
-                                    <span>Smooth</span>
-                                </div>
+                                    max={1000}
+                                />
                             </div>
+
+                            {localSettings.provider === 'ollama' && (
+                                <div className="form-group">
+                                    <label htmlFor="ollama-endpoint">Ollama Endpoint</label>
+                                    <input
+                                        id="ollama-endpoint"
+                                        type="url"
+                                        className="form-input"
+                                        value={localSettings.ollamaEndpoint || ''}
+                                        onChange={(e) => setLocalSettings({ ...localSettings, ollamaEndpoint: e.target.value })}
+                                        placeholder="http://localhost:11434/api"
+                                    />
+                                </div>
+                            )}
                         </div>
                     </div>
 
-                    <div className="dialog-footer">
+                    <div className="dialog-actions">
                         <button
+                            type="button"
                             className="btn btn-secondary"
-                            onClick={handleShowStats}
+                            onClick={handleCancel}
                         >
-                            <BarChart3 size={16} />
-                            Usage Stats
+                            Cancel
                         </button>
-
-                        <div className="footer-actions">
-                            <button
-                                className="btn btn-secondary"
-                                onClick={() => uiStore.hideSettings()}
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                className="btn btn-primary"
-                                onClick={handleSave}
-                            >
-                                Save Settings
-                            </button>
-                        </div>
+                        <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={handleSave}
+                        >
+                            Save Settings
+                        </button>
                     </div>
-
-                    {/* Usage Stats Modal */}
-                    {uiStore.usageStats && (
-                        <div className="stats-overlay">
-                            <div className="stats-modal">
-                                <h3>Usage Statistics</h3>
-                                <button
-                                    className="stats-close"
-                                    onClick={() => uiStore.usageStats = null}
-                                >
-                                    <X size={16} />
-                                </button>
-
-                                <div className="stats-content">
-                                    <div className="stat-card">
-                                        <h4>Total Usage</h4>
-                                        <div className="stat-row">
-                                            <span>Conversations:</span>
-                                            <span>{uiStore.usageStats.totalConversations}</span>
-                                        </div>
-                                        <div className="stat-row">
-                                            <span>Messages:</span>
-                                            <span>{uiStore.usageStats.totalMessages}</span>
-                                        </div>
-                                        <div className="stat-row">
-                                            <span>Tokens:</span>
-                                            <span>{uiStore.usageStats.totalTokens.toLocaleString()}</span>
-                                        </div>
-                                        <div className="stat-row">
-                                            <span>Cost:</span>
-                                            <span>${uiStore.usageStats.totalCost.toFixed(4)}</span>
-                                        </div>
-                                    </div>
-
-                                    <div className="stat-card">
-                                        <h4>By Provider</h4>
-                                        {Object.entries(uiStore.usageStats.byProvider).map(([provider, stats]) => (
-                                            <div key={provider} className="provider-stats">
-                                                <h5>{provider}</h5>
-                                                <div className="stat-row">
-                                                    <span>Messages:</span>
-                                                    <span>{stats.messages}</span>
-                                                </div>
-                                                <div className="stat-row">
-                                                    <span>Cost:</span>
-                                                    <span>${stats.cost.toFixed(4)}</span>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
                 </Dialog.Content>
             </Dialog.Portal>
         </Dialog.Root>
